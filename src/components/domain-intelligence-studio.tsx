@@ -4,12 +4,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   Archive,
+  AlertTriangle,
   BadgeCheck,
   BarChart3,
   BrainCircuit,
   Check,
   CircleHelp,
-  Clock3,
   CloudUpload,
   Database,
   Download,
@@ -24,7 +24,6 @@ import {
   Moon,
   Plus,
   RefreshCw,
-  Save,
   Search,
   Settings,
   ShieldCheck,
@@ -42,8 +41,8 @@ import {
   GENERATION_STYLE_LABELS,
   transformName,
 } from "@/domain/generator";
-import { normalizeExtension, splitNames } from "@/domain/normalize";
-import { DEFAULT_EXTENSIONS, isKnownExtension } from "@/domain/tlds";
+import { normalizeBaseName, normalizeExtension, splitNames } from "@/domain/normalize";
+import { DEFAULT_EXTENSIONS, getExtensionQuality, isKnownExtension } from "@/domain/tlds";
 import type {
   AvailabilityStatus,
   DomainCheckResponse,
@@ -64,13 +63,18 @@ type SavedDomain = {
   note: string;
   registrar: string;
 };
+type SearchOutcome = {
+  name: string;
+  exactResults: DomainCheckResult[];
+  alternativesReady: boolean;
+};
 
 const QUICK_EXTENSIONS = ["ai", "com", "sg", "com.sg", "io", "co", "app", "dev", "tech", "education"];
 const INITIAL_EXTENSIONS = ["ai", "com", "sg", "com.sg", "io", "co", "app", "dev"];
 const MODES: { value: ProviderMode; label: string }[] = [
-  { value: "mock", label: "Mock" },
-  { value: "hybrid", label: "Hybrid" },
   { value: "live", label: "Live" },
+  { value: "hybrid", label: "Hybrid" },
+  { value: "mock", label: "Mock" },
 ];
 const NAV_ITEMS: { value: PageKey; label: string; icon: React.ElementType }[] = [
   { value: "search", label: "Search", icon: Search },
@@ -114,11 +118,51 @@ const STYLE_PRESETS: { label: string; styles: GenerationStyle[]; seed: string }[
 ];
 const FILTERS: { value: ResultFilter; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "available", label: "Available" },
   { value: "premium", label: "Premium" },
-  { value: "manual", label: "Manual" },
+  { value: "manual", label: "Needs check" },
   { value: "taken", label: "Taken" },
   { value: "favorites", label: "Saved" },
+];
+const AVAILABLE_RECOMMENDATION_LIMIT = 20;
+const ALTERNATIVE_CANDIDATE_CHECK_LIMIT = 32;
+const AVAILABLE_CHECKOUT_CAVEAT =
+  "Provider-confirmed at check time. Not reserved. Final availability and price must be confirmed at registrar checkout.";
+const COMMERCIAL_INTENT_SUFFIXES = [
+  "ai",
+  "cloud",
+  "crm",
+  "erp",
+  "ops",
+  "agents",
+  "automation",
+  "analytics",
+  "security",
+  "platform",
+  "suite",
+  "workflow",
+  "data",
+  "insights",
+  "market",
+  "portal",
+  "growth",
+  "sales",
+  "finance",
+  "flow",
+  "hq",
+];
+const COMMERCIAL_INTENT_PREFIXES = [
+  "ai",
+  "cloud",
+  "secure",
+  "smart",
+  "digital",
+  "global",
+  "next",
+  "get",
+  "try",
+  "use",
+  "go",
+  "my",
 ];
 
 const STATUS_META: Record<
@@ -130,7 +174,7 @@ const STATUS_META: Record<
     tone: "border-emerald-300/35 bg-emerald-300/12 text-emerald-100",
     dot: "bg-emerald-300",
     matrix: "bg-emerald-400/85",
-    tooltip: "Provider returned strong confirmation that this domain is available.",
+    tooltip: AVAILABLE_CHECKOUT_CAVEAT,
   },
   premium_available: {
     label: "Premium",
@@ -175,11 +219,38 @@ const STATUS_META: Record<
     tooltip: "The domain name failed validation.",
   },
   manual_check_required: {
-    label: "Manual check",
+    label: "Needs registrar",
     tone: "border-amber-300/35 bg-amber-300/10 text-amber-100",
     dot: "bg-amber-300",
     matrix: "bg-amber-400/60",
-    tooltip: "Manual registrar or policy validation is required.",
+    tooltip: "Open a registrar or registry lookup before making any availability claim.",
+  },
+};
+
+const MOCK_STATUS_META: typeof STATUS_META = {
+  ...STATUS_META,
+  available_confirmed: {
+    label: "Mock only",
+    tone: "border-sky-300/35 bg-sky-300/10 text-sky-100",
+    dot: "bg-sky-300",
+    matrix: "bg-sky-400/45",
+    tooltip:
+      "This is simulated mock availability for demos/tests. Use Live or registrar/RDAP verification before registration.",
+  },
+  premium_available: {
+    label: "Mock premium",
+    tone: "border-sky-300/35 bg-sky-300/10 text-sky-100",
+    dot: "bg-sky-300",
+    matrix: "bg-sky-400/45",
+    tooltip:
+      "This is simulated mock premium data. It is not registrar pricing or purchase availability.",
+  },
+  taken_confirmed: {
+    label: "Mock taken",
+    tone: "border-sky-300/35 bg-sky-300/10 text-sky-100",
+    dot: "bg-sky-300",
+    matrix: "bg-sky-400/45",
+    tooltip: "This is simulated mock taken data for demos/tests.",
   },
 };
 
@@ -215,7 +286,7 @@ function resultMatchesFilter(
   saved: Map<string, SavedDomain>,
 ) {
   if (filter === "all") return true;
-  if (filter === "available") return result.status === "available_confirmed";
+  if (filter === "available") return isRegistrarAvailable(result);
   if (filter === "premium") return result.status === "premium_available";
   if (filter === "taken") return result.status === "taken_confirmed";
   if (filter === "manual") {
@@ -249,6 +320,151 @@ function normalizeNameList(input: string) {
 
 function sourceLabel(source: DomainCheckResult["source"]) {
   return SOURCE_LABELS[source] ?? source;
+}
+
+function isMockResult(result: DomainCheckResult) {
+  return result.source === "mock" || result.providerName.toLowerCase().includes("mock");
+}
+
+function isRegistrarAvailable(result: DomainCheckResult) {
+  return result.status === "available_confirmed" && !isMockResult(result);
+}
+
+function statusMetaForResult(result: DomainCheckResult) {
+  return isMockResult(result) ? MOCK_STATUS_META[result.status] : STATUS_META[result.status];
+}
+
+function evidenceLabel(result: DomainCheckResult) {
+  if (isMockResult(result)) return "Mock simulation";
+  if (result.source === "dns") return "DNS evidence";
+  if (result.source === "rdap") return "RDAP registry";
+  if (result.source === "registrar_api") return "Registrar API";
+  if (result.source === "manual") return "Registrar check";
+  return sourceLabel(result.source);
+}
+
+function evidenceSummary(result: DomainCheckResult) {
+  if (isMockResult(result)) {
+    return "Demo data only. Verify in Live mode before acting.";
+  }
+
+  if (isRegistrarAvailable(result)) {
+    return AVAILABLE_CHECKOUT_CAVEAT;
+  }
+
+  if (result.source === "dns") {
+    return result.status === "taken_confirmed"
+      ? "DNS records exist, so this is treated as taken evidence only."
+      : "DNS absence is not used as availability proof.";
+  }
+
+  if (result.source === "rdap") {
+    return result.status === "available_confirmed"
+      ? "Registry RDAP returned not found; registrar confirmation is still recommended."
+      : "Registry registration data source.";
+  }
+
+  if (result.source === "registrar_api") {
+    return "Registrar response; strongest availability source in this app.";
+  }
+
+  if (result.source === "manual") {
+    return "This extension needs a registrar or registry lookup before you can claim availability. Open the registrar link, or configure a registrar API for automated checks.";
+  }
+
+  return result.rawSummary ?? "Provider evidence recorded.";
+}
+
+function priceLabel(result: DomainCheckResult) {
+  return result.priceRegistration
+    ? `${result.currency ?? ""} ${result.priceRegistration}`.trim()
+    : "";
+}
+
+function rankAvailableDomainResults(
+  results: DomainCheckResult[],
+  recommendations: Recommendation[],
+) {
+  const scoreByName = new Map(
+    recommendations.map((recommendation) => [
+      recommendation.name,
+      recommendation.brandScore,
+    ]),
+  );
+
+  return [...results]
+    .filter(isRegistrarAvailable)
+    .sort((left, right) => {
+      const scoreDelta =
+        (scoreByName.get(right.name) ?? 0) - (scoreByName.get(left.name) ?? 0);
+
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      return getExtensionQuality(right.extension) - getExtensionQuality(left.extension);
+    });
+}
+
+function priorityRecommendationExtensions(extensions: string[]) {
+  const manualHeavy = new Set(["sg", "com.sg", "edu", "education"]);
+  const priority = ["ai", "com", "io", "co", "app", "dev", "tech"];
+  const selected = priority.filter((extension) => extensions.includes(extension));
+  const fallback = extensions.filter((extension) => !manualHeavy.has(extension));
+
+  return Array.from(new Set([...selected, ...fallback])).slice(0, 6);
+}
+
+function compactAlternativeName(value: string) {
+  return normalizeBaseName(value).replace(/-/g, "");
+}
+
+function removeInnerVowels(value: string) {
+  return compactAlternativeName(value)
+    .split("")
+    .filter((char, index) => index === 0 || !["a", "e", "i", "o", "u"].includes(char))
+    .join("");
+}
+
+function joinAlternative(prefixOrSuffix: string, base: string, position: "prefix" | "suffix") {
+  if (position === "prefix") {
+    return base.startsWith(prefixOrSuffix) ? base : `${prefixOrSuffix}${base}`;
+  }
+
+  return base.endsWith(prefixOrSuffix) ? base : `${base}${prefixOrSuffix}`;
+}
+
+function keywordAnchoredAlternativeNames(seedName: string, limit = 24) {
+  const base = compactAlternativeName(seedName);
+
+  if (!base) {
+    return [];
+  }
+
+  const compressed = removeInnerVowels(base);
+  const candidates: string[] = [];
+  const maxPairs = Math.max(COMMERCIAL_INTENT_SUFFIXES.length, COMMERCIAL_INTENT_PREFIXES.length);
+
+  for (let index = 0; index < maxPairs; index += 1) {
+    const suffix = COMMERCIAL_INTENT_SUFFIXES[index];
+    const prefix = COMMERCIAL_INTENT_PREFIXES[index];
+
+    if (suffix) {
+      candidates.push(joinAlternative(suffix, base, "suffix"));
+    }
+
+    if (prefix) {
+      candidates.push(joinAlternative(prefix, base, "prefix"));
+    }
+  }
+
+  for (const suffix of COMMERCIAL_INTENT_SUFFIXES.slice(0, 6)) {
+    candidates.push(joinAlternative(suffix, compressed, "suffix"));
+  }
+
+  return Array.from(new Set(candidates.map(compactAlternativeName)))
+    .filter((name) => name && name !== base)
+    .slice(0, limit);
 }
 
 function GlassCard({
@@ -377,7 +593,7 @@ export function DomainIntelligenceStudio() {
   const [avoidLetters, setAvoidLetters] = useState("");
   const [mustInclude, setMustInclude] = useState("");
   const [mustAvoid, setMustAvoid] = useState("");
-  const [mode, setMode] = useState<ProviderMode>("mock");
+  const [mode, setMode] = useState<ProviderMode>("live");
   const [selectedExtensions, setSelectedExtensions] = useState(
     () => new Set<string>(INITIAL_EXTENSIONS),
   );
@@ -386,7 +602,8 @@ export function DomainIntelligenceStudio() {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [generated, setGenerated] = useState<GeneratedCandidate[]>([]);
   const [saved, setSaved] = useState<Map<string, SavedDomain>>(() => new Map());
-  const [filter, setFilter] = useState<ResultFilter>("all");
+  const [searchOutcome, setSearchOutcome] = useState<SearchOutcome | null>(null);
+  const [filter, setFilter] = useState<ResultFilter>("available");
   const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState("");
   const [isChecking, setIsChecking] = useState(false);
@@ -394,10 +611,20 @@ export function DomainIntelligenceStudio() {
   const [cacheTtl, setCacheTtl] = useState(300);
   const [rateLimit, setRateLimit] = useState(8);
   const bulkFileRef = useRef<HTMLInputElement | null>(null);
+  const searchRunRef = useRef(0);
+  const progressResetRef = useRef<number | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    return () => {
+      if (progressResetRef.current !== null) {
+        window.clearTimeout(progressResetRef.current);
+      }
+    };
+  }, []);
 
   const extensions = useMemo(
     () => Array.from(selectedExtensions).sort((a, b) => a.localeCompare(b)),
@@ -412,9 +639,9 @@ export function DomainIntelligenceStudio() {
     () => results.filter((result) => resultMatchesFilter(result, filter, savedByDomain)),
     [filter, results, savedByDomain],
   );
-  const availableResults = useMemo(
-    () => visibleResults.filter((result) => result.status === "available_confirmed"),
-    [visibleResults],
+  const confirmedAvailableResults = useMemo(
+    () => results.filter(isRegistrarAvailable),
+    [results],
   );
   const groupedByName = useMemo(() => {
     const groups = new Map<string, DomainCheckResult[]>();
@@ -425,15 +652,42 @@ export function DomainIntelligenceStudio() {
 
     return groups;
   }, [results]);
-  const topRecommendation = recommendations[0];
+  const availableRecommendations = useMemo(
+    () =>
+      recommendations.filter((recommendation) =>
+        (groupedByName.get(recommendation.name) ?? []).some(isRegistrarAvailable),
+      ),
+    [groupedByName, recommendations],
+  );
+  const availableDomainRecommendations = useMemo(
+    () =>
+      rankAvailableDomainResults(confirmedAvailableResults, recommendations).slice(
+        0,
+        AVAILABLE_RECOMMENDATION_LIMIT,
+      ),
+    [confirmedAvailableResults, recommendations],
+  );
+  const topRecommendation = availableDomainRecommendations.length
+    ? scoreForName(availableDomainRecommendations[0].name, recommendations)
+    : undefined;
+  const exactSearchUnavailable = searchOutcome
+    ? !searchOutcome.exactResults.some(isRegistrarAvailable)
+    : false;
+  const isRelatedAvailabilityMode = filter === "available" && exactSearchUnavailable;
+  const isFindingAvailableAlternatives =
+    isRelatedAvailabilityMode && Boolean(searchOutcome && !searchOutcome.alternativesReady);
+  const domainResultsTotalCount =
+    isRelatedAvailabilityMode
+      ? AVAILABLE_RECOMMENDATION_LIMIT
+      : results.length;
   const transformed = useMemo(() => transformName(query), [query]);
   const exportRows = useMemo(
     () => buildExportRows(visibleResults, recommendations),
     [recommendations, visibleResults],
   );
   const availableExportRows = useMemo(
-    () => buildExportRows(availableResults, recommendations),
-    [availableResults, recommendations],
+    () => buildExportRows(confirmedAvailableResults, recommendations),
+    [confirmedAvailableResults, recommendations],
   );
   const allowCustomExtensions = useMemo(
     () => extensions.some((extension) => !isKnownExtension(extension)),
@@ -482,7 +736,24 @@ export function DomainIntelligenceStudio() {
     setSeed(preset.seed);
   }
 
+  function clearProgressReset() {
+    if (progressResetRef.current !== null) {
+      window.clearTimeout(progressResetRef.current);
+      progressResetRef.current = null;
+    }
+  }
+
+  function scheduleProgressReset() {
+    clearProgressReset();
+    progressResetRef.current = window.setTimeout(() => {
+      setProgress(0);
+      setStatusText("");
+      progressResetRef.current = null;
+    }, 900);
+  }
+
   async function checkNames(names: string[], nextPage: PageKey = "results") {
+    const runId = searchRunRef.current + 1;
     const normalizedNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
 
     if (normalizedNames.length === 0 || extensions.length === 0) {
@@ -490,7 +761,10 @@ export function DomainIntelligenceStudio() {
       return;
     }
 
+    searchRunRef.current = runId;
+    clearProgressReset();
     setError(null);
+    setSearchOutcome(null);
     setIsChecking(true);
     setProgress(12);
     setStatusText("Checking domain stack");
@@ -509,37 +783,215 @@ export function DomainIntelligenceStudio() {
       });
       const payload = (await response.json()) as DomainCheckResponse & { error?: string };
 
+      if (searchRunRef.current !== runId) {
+        return;
+      }
+
       setProgress(78);
 
       if (!response.ok) {
         throw new Error(payload.error ?? "Domain check failed.");
       }
 
+      const nextRecommendations = payload.recommendations.slice(0, 20);
+      const hasAvailableResult = payload.results.some(isRegistrarAvailable);
+      const shouldTrackSearchOutcome =
+        nextPage === "results" && mode !== "mock" && normalizedNames.length === 1;
+
       setResults(payload.results);
-      setRecommendations(payload.recommendations.slice(0, 20));
+      setRecommendations(nextRecommendations);
+      setSearchOutcome(
+        shouldTrackSearchOutcome
+          ? {
+              name: normalizedNames[0],
+              exactResults: payload.results,
+              alternativesReady: hasAvailableResult,
+            }
+          : null,
+      );
+      setFilter("available");
       setActivePage(nextPage);
       setProgress(100);
       setStatusText("Results ready");
+      setIsChecking(false);
+
+      if (
+        nextPage === "results" &&
+        mode !== "mock" &&
+        normalizedNames.length === 1 &&
+        !hasAvailableResult
+      ) {
+        void appendAvailableAlternatives(
+          runId,
+          normalizedNames,
+          payload.results,
+          nextRecommendations,
+        );
+      } else {
+        scheduleProgressReset();
+      }
     } catch (checkError) {
+      if (searchRunRef.current !== runId) {
+        return;
+      }
+
       setError(checkError instanceof Error ? checkError.message : "Domain check failed.");
       setProgress(0);
       setStatusText("");
-    } finally {
       setIsChecking(false);
-      window.setTimeout(() => {
-        setProgress(0);
-        setStatusText("");
-      }, 900);
     }
   }
 
+  async function appendAvailableAlternatives(
+    runId: number,
+    normalizedNames: string[],
+    baseResults: DomainCheckResult[],
+    baseRecommendations: Recommendation[],
+  ) {
+    if (searchRunRef.current !== runId) {
+      return;
+    }
+
+    setProgress(86);
+    setStatusText("Finding available alternatives");
+
+    try {
+      const alternatives = await findAvailableAlternatives(
+        normalizedNames,
+        baseResults,
+        baseRecommendations,
+      );
+
+      if (searchRunRef.current !== runId) {
+        return;
+      }
+
+      if (alternatives.results.length > 0) {
+        setResults((current) => {
+          const existingDomains = new Set(current.map((result) => result.domain));
+
+          return [
+            ...current,
+            ...alternatives.results.filter((result) => !existingDomains.has(result.domain)),
+          ];
+        });
+        setRecommendations((current) => {
+          const existingNames = new Set(current.map((item) => item.name));
+
+          return [
+            ...current,
+            ...alternatives.recommendations.filter((item) => !existingNames.has(item.name)),
+          ].slice(0, 40);
+        });
+        setFilter("available");
+        setSearchOutcome((current) =>
+          current?.name === normalizedNames[0]
+            ? { ...current, alternativesReady: true }
+            : current,
+        );
+        setStatusText("Available recommendations updated");
+      } else {
+        setSearchOutcome((current) =>
+          current?.name === normalizedNames[0]
+            ? { ...current, alternativesReady: true }
+            : current,
+        );
+        setStatusText("Results ready");
+      }
+
+      setProgress(100);
+    } catch {
+      if (searchRunRef.current !== runId) {
+        return;
+      }
+
+      setProgress(100);
+      setStatusText("Results ready");
+    } finally {
+      if (searchRunRef.current === runId) {
+        scheduleProgressReset();
+      }
+    }
+  }
+
+  async function findAvailableAlternatives(
+    seedNames: string[],
+    existingResults: DomainCheckResult[],
+    existingRecommendations: Recommendation[],
+  ) {
+    if (
+      seedNames.length !== 1 ||
+      existingResults.some(isRegistrarAvailable) ||
+      extensions.length === 0
+    ) {
+      return { results: [], recommendations: [] };
+    }
+
+    const namesToCheck = keywordAnchoredAlternativeNames(
+      seedNames[0],
+      ALTERNATIVE_CANDIDATE_CHECK_LIMIT,
+    ).filter((name) => !seedNames.includes(name));
+    const extensionsToCheck = priorityRecommendationExtensions(extensions);
+
+    if (namesToCheck.length === 0 || extensionsToCheck.length === 0) {
+      return { results: [], recommendations: [] };
+    }
+
+    const response = await fetch("/api/domain/check", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        names: namesToCheck,
+        extensions: extensionsToCheck,
+        mode,
+        includeSuggestions: true,
+        allowCustomExtensions,
+      }),
+    });
+    const payload = (await response.json()) as DomainCheckResponse & { error?: string };
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? "Available alternative check failed.");
+    }
+
+    const available = rankAvailableDomainResults(
+      payload.results,
+      payload.recommendations,
+    ).slice(0, AVAILABLE_RECOMMENDATION_LIMIT);
+    const availableNames = new Set(available.map((result) => result.name));
+    const recommendationByName = new Map(
+      payload.recommendations.map((recommendation) => [
+        recommendation.name,
+        recommendation,
+      ]),
+    );
+    const seedRecommendationByName = new Map(
+      existingRecommendations.map((recommendation) => [
+        recommendation.name,
+        recommendation,
+      ]),
+    );
+
+    return {
+      results: available,
+      recommendations: Array.from(availableNames)
+        .map((name) => recommendationByName.get(name) ?? seedRecommendationByName.get(name))
+        .filter((recommendation): recommendation is Recommendation => Boolean(recommendation)),
+    };
+  }
+
   async function generateAndCheck() {
+    const runId = searchRunRef.current + 1;
+
     if (extensions.length === 0) {
       setError("Add at least one extension before generating.");
       return;
     }
 
+    searchRunRef.current = runId;
+    clearProgressReset();
     setError(null);
+    setSearchOutcome(null);
     setIsChecking(true);
     setProgress(10);
     setStatusText("Generating names");
@@ -565,6 +1017,10 @@ export function DomainIntelligenceStudio() {
       });
       const payload = (await response.json()) as GenerateNamesResponse & { error?: string };
 
+      if (searchRunRef.current !== runId) {
+        return;
+      }
+
       setProgress(76);
 
       if (!response.ok) {
@@ -574,19 +1030,21 @@ export function DomainIntelligenceStudio() {
       setGenerated(payload.candidates);
       setResults(payload.results);
       setRecommendations(payload.recommendations);
+      setFilter("available");
       setActivePage("results");
       setProgress(100);
       setStatusText("Generated and checked");
+      setIsChecking(false);
+      scheduleProgressReset();
     } catch (generationError) {
+      if (searchRunRef.current !== runId) {
+        return;
+      }
+
       setError(generationError instanceof Error ? generationError.message : "Generation failed.");
       setProgress(0);
       setStatusText("");
-    } finally {
       setIsChecking(false);
-      window.setTimeout(() => {
-        setProgress(0);
-        setStatusText("");
-      }, 900);
     }
   }
 
@@ -762,6 +1220,7 @@ export function DomainIntelligenceStudio() {
               </motion.div>
             )}
           </AnimatePresence>
+          <ModeSafetyNotice mode={mode} hasMockResults={results.some(isMockResult)} />
         </header>
 
         <AnimatePresence mode="wait">
@@ -802,45 +1261,50 @@ export function DomainIntelligenceStudio() {
               className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]"
             >
               <section className="flex min-w-0 flex-col gap-5">
+                <SearchOutcomeNotice
+                  outcome={searchOutcome}
+                  relatedAvailableCount={availableDomainRecommendations.length}
+                  onShowExact={() => setFilter("all")}
+                />
                 <DashboardToolbar
                   filter={filter}
                   setFilter={setFilter}
+                  availableCount={confirmedAvailableResults.length}
+                  totalCount={domainResultsTotalCount}
+                  isRelatedAvailabilityMode={isRelatedAvailabilityMode}
+                  isFindingAlternatives={isFindingAvailableAlternatives}
                   exportMenu={
                     <ExportMenu
                       onCsv={() => exportCsv()}
                       onJson={exportJson}
                       onXlsx={() => exportXlsx()}
                       onAvailableCsv={() => exportCsv(availableExportRows, "available-domains.csv")}
+                      availableCount={confirmedAvailableResults.length}
                     />
                   }
                 />
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {visibleResults.slice(0, 8).map((result) => (
-                    <DomainResultCard
-                      key={result.domain}
-                      result={result}
-                      recommendation={scoreForName(result.name, recommendations)}
-                      saved={saved.has(result.domain)}
-                      onSave={() => saveResult(result)}
-                    />
-                  ))}
-                </div>
-                <CandidateTable
+                <DomainResultsPanel
                   results={visibleResults}
-                  recommendations={recommendations}
+                  totalCount={domainResultsTotalCount}
+                  filter={filter}
                   saved={saved}
                   onSave={saveResult}
+                  onShowAll={() => setFilter("all")}
+                  isRelatedAvailabilityMode={isRelatedAvailabilityMode}
+                  isFindingAlternatives={isFindingAvailableAlternatives}
                 />
               </section>
 
               <aside className="flex min-w-0 flex-col gap-5">
                 <BrandScoreGauge recommendation={topRecommendation} results={results} />
                 <RecommendationPanel
+                  availableDomains={availableDomainRecommendations}
                   recommendations={recommendations}
+                  isFindingAlternatives={isFindingAvailableAlternatives}
                   onCheck={(names) => checkNames(names)}
                 />
                 <ExtensionMatrix groups={groupedByName} extensions={extensions} />
-                <DomainStackCards groups={groupedByName} recommendations={recommendations} />
+                <DomainStackCards groups={groupedByName} recommendations={availableRecommendations} />
               </aside>
             </motion.div>
           )}
@@ -931,19 +1395,21 @@ export function DomainIntelligenceStudio() {
                   <h2 className="text-xl font-semibold">Bulk results</h2>
                   <p className="mt-2 text-sm leading-6 text-zinc-400">
                     {results.length
-                      ? `${results.length} checks loaded. ${availableResults.length} confirmed available.`
+                      ? `${results.length} checks loaded. ${confirmedAvailableResults.length} confirmed available.`
                       : "Paste or upload names to populate the checker."}
                   </p>
                   <div className="mt-5">
-                    <BulkProgress progress={progress} total={results.length} available={availableResults.length} />
+                    <BulkProgress progress={progress} total={results.length} available={confirmedAvailableResults.length} />
                   </div>
                 </GlassCard>
               </div>
-              <CandidateTable
+              <DomainResultsPanel
                 results={visibleResults}
-                recommendations={recommendations}
+                totalCount={results.length}
+                filter={filter}
                 saved={saved}
                 onSave={saveResult}
+                onShowAll={() => setFilter("all")}
               />
             </motion.div>
           )}
@@ -1147,6 +1613,95 @@ function StyleSelector({
   );
 }
 
+function ModeSafetyNotice({
+  mode,
+  hasMockResults,
+}: {
+  mode: ProviderMode;
+  hasMockResults: boolean;
+}) {
+  const showMockWarning = mode === "mock" || hasMockResults;
+  const message =
+    mode === "mock"
+      ? "Mock mode is simulated demo data. It is not evidence that a domain can be registered."
+      : hasMockResults
+        ? "Some results came from mock fallback. Treat those as simulated and verify with Live or a registrar."
+        : mode === "hybrid"
+          ? "Hybrid may use fallback providers. Check each result source before acting."
+          : "";
+
+  if (!message && !showMockWarning) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs font-semibold",
+        showMockWarning
+          ? "border-amber-300/30 bg-amber-300/10 text-amber-100"
+          : "border-cyan-200/25 bg-cyan-200/8 text-cyan-100",
+      )}
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function SearchOutcomeNotice({
+  outcome,
+  relatedAvailableCount,
+  onShowExact,
+}: {
+  outcome: SearchOutcome | null;
+  relatedAvailableCount: number;
+  onShowExact: () => void;
+}) {
+  if (!outcome || outcome.exactResults.some(isRegistrarAvailable)) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-amber-200/25 bg-amber-200/[0.075] p-4 text-amber-50 shadow-[0_18px_60px_rgba(0,0,0,0.24)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-amber-200/25 bg-amber-200/10">
+              <AlertTriangle className="h-4 w-4" />
+            </span>
+            <h2 className="text-lg font-semibold text-white">
+              &quot;{outcome.name}&quot; domain is not available
+            </h2>
+          </div>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-amber-50/80">
+            {outcome.alternativesReady
+              ? "Below are the top 20 related available domains, prioritized for commercial intent, search traffic value, and enterprise use cases."
+              : "Exact lookup completed first. Finding the top 20 related available domains with stronger commercial intent now."}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onShowExact}
+          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-white/10 bg-black/20 px-3 text-xs font-bold text-amber-50 transition hover:border-amber-200/40 hover:bg-white/[0.06]"
+        >
+          Review exact checks
+        </button>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
+        <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1">
+          {outcome.exactResults.length} exact checks
+        </span>
+        {relatedAvailableCount > 0 && (
+          <span className="rounded-full border border-emerald-200/25 bg-emerald-200/10 px-2.5 py-1 text-emerald-100">
+            {relatedAvailableCount} of {AVAILABLE_RECOMMENDATION_LIMIT} related available
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProviderStatusPanel({
   mode,
   results,
@@ -1159,8 +1714,9 @@ function ProviderStatusPanel({
     return counts;
   }, {});
   const rows = [
-    ["Mock provider", mode === "mock" || mode === "hybrid" ? "Ready" : "Fallback"],
+    ["Mock provider", mode === "mock" ? "Demo only" : mode === "hybrid" ? "Fallback" : "Off"],
     ["RDAP", mode === "live" || mode === "hybrid" ? "Enabled" : "Standby"],
+    ["DNS taken evidence", mode === "live" || mode === "hybrid" ? "Enabled" : "Standby"],
     ["Registrar API", mode === "live" || mode === "hybrid" ? "Conditional" : "Off"],
     ["Manual policy", "Always on"],
   ];
@@ -1201,16 +1757,43 @@ function ProviderStatusPanel({
 function DashboardToolbar({
   filter,
   setFilter,
+  availableCount,
+  totalCount,
+  isRelatedAvailabilityMode = false,
+  isFindingAlternatives = false,
   exportMenu,
 }: {
   filter: ResultFilter;
   setFilter: (filter: ResultFilter) => void;
+  availableCount: number;
+  totalCount: number;
+  isRelatedAvailabilityMode?: boolean;
+  isFindingAlternatives?: boolean;
   exportMenu: React.ReactNode;
 }) {
   return (
     <GlassCard className="flex flex-wrap items-center justify-between gap-3 p-3">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         <Filter className="h-4 w-4 text-zinc-400" />
+        <button
+          type="button"
+          onClick={() => setFilter(filter === "available" ? "all" : "available")}
+          title="Show only domains with confirmed non-mock availability."
+          className={cn(
+            "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-bold transition",
+            filter === "available"
+              ? "border-emerald-200/45 bg-emerald-200/15 text-emerald-100"
+              : "border-white/10 bg-white/[0.045] text-zinc-300 hover:border-emerald-200/35 hover:text-white",
+          )}
+        >
+          <BadgeCheck className="h-3.5 w-3.5" />
+          Available only
+          {(!isRelatedAvailabilityMode || availableCount > 0) && (
+            <span className="rounded-full bg-black/25 px-1.5 py-0.5 text-[10px]">
+              {availableCount}
+            </span>
+          )}
+        </button>
         {FILTERS.map((item) => (
           <button
             key={item.value}
@@ -1227,6 +1810,13 @@ function DashboardToolbar({
           </button>
         ))}
       </div>
+      <div className="text-xs font-semibold text-zinc-500">
+        {isFindingAlternatives
+          ? "Finding top 20"
+          : filter === "available"
+          ? `${availableCount} confirmed available`
+          : `${totalCount} checked`}
+      </div>
       {exportMenu}
     </GlassCard>
   );
@@ -1237,11 +1827,13 @@ function ExportMenu({
   onJson,
   onXlsx,
   onAvailableCsv,
+  availableCount,
 }: {
   onCsv: () => void;
   onJson: () => void;
   onXlsx: () => void;
   onAvailableCsv: () => void;
+  availableCount: number;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -1254,16 +1846,20 @@ function ExportMenu({
       <IconButton label="Export XLSX" onClick={onXlsx}>
         <FileSpreadsheet className="h-4 w-4" />
       </IconButton>
-      <SecondaryButton onClick={onAvailableCsv} className="min-h-10 px-3 text-xs">
+      <SecondaryButton
+        onClick={onAvailableCsv}
+        disabled={availableCount === 0}
+        className="min-h-10 px-3 text-xs"
+      >
         <BadgeCheck className="h-4 w-4" />
-        Available only
+        Export available
       </SecondaryButton>
     </div>
   );
 }
 
-function AvailabilityBadge({ status }: { status: AvailabilityStatus }) {
-  const meta = STATUS_META[status];
+function AvailabilityBadge({ result }: { result: DomainCheckResult }) {
+  const meta = statusMetaForResult(result);
 
   return (
     <span
@@ -1279,80 +1875,151 @@ function AvailabilityBadge({ status }: { status: AvailabilityStatus }) {
   );
 }
 
-function ConfidenceBadge({ confidence }: { confidence: DomainCheckResult["confidence"] }) {
-  const tone =
-    confidence === "high"
-      ? "border-cyan-200/35 bg-cyan-200/10 text-cyan-100"
-      : confidence === "medium"
-        ? "border-amber-200/35 bg-amber-200/10 text-amber-100"
-        : "border-zinc-300/30 bg-zinc-300/10 text-zinc-200";
-
-  return (
-    <span
-      title="Confidence reflects source strength and provider certainty."
-      className={cn("inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-bold capitalize", tone)}
-    >
-      {confidence}
-    </span>
-  );
-}
-
 function RegistrarLinkButton({ result }: { result: DomainCheckResult }) {
   if (!result.registrarUrl) return null;
+
+  const isMock = isMockResult(result);
 
   return (
     <a
       href={result.registrarUrl}
       target="_blank"
       rel="noreferrer"
-      title="Open registrar or registry action link"
+      title={
+        isMock
+          ? "Open registrar to verify this simulated mock result"
+          : "Open registrar or registry action link"
+      }
       className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.05] px-3 text-sm font-bold text-cyan-100 transition hover:border-cyan-200/45"
     >
-      Registrar
+      {isMock ? "Verify" : "Registrar"}
       <ExternalLink className="h-4 w-4" />
     </a>
   );
 }
 
-function DomainResultCard({
-  result,
-  recommendation,
+function DomainResultsPanel({
+  results,
+  totalCount,
+  filter,
   saved,
   onSave,
+  onShowAll,
+  isRelatedAvailabilityMode = false,
+  isFindingAlternatives = false,
 }: {
-  result: DomainCheckResult;
-  recommendation?: Recommendation;
-  saved: boolean;
-  onSave: () => void;
+  results: DomainCheckResult[];
+  totalCount: number;
+  filter: ResultFilter;
+  saved: Map<string, SavedDomain>;
+  onSave: (result: DomainCheckResult) => void;
+  onShowAll: () => void;
+  isRelatedAvailabilityMode?: boolean;
+  isFindingAlternatives?: boolean;
 }) {
   return (
-    <GlassCard className="p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate font-mono text-xl font-bold tracking-normal text-white">
-            {result.domain}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <AvailabilityBadge status={result.status} />
-            <ConfidenceBadge confidence={result.confidence} />
-          </div>
+    <GlassCard className="overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-100/70">
+            Domain Stack
+          </p>
+          <h2 className="mt-1 text-lg font-semibold">
+            {filter === "available" ? "Confirmed available domains" : "Checked extensions"}
+          </h2>
         </div>
-        <IconButton label={saved ? "Remove from saved" : "Save domain"} active={saved} onClick={onSave}>
-          <Star className={cn("h-4 w-4", saved && "fill-current")} />
-        </IconButton>
-      </div>
-      <div className="mt-5 grid grid-cols-3 gap-3">
-        <MetricTile label="Score" value={recommendation?.brandScore ?? "-"} />
-        <MetricTile label="Source" value={sourceLabel(result.source)} />
-        <MetricTile label="Price" value={result.priceRegistration ? `${result.currency ?? ""} ${result.priceRegistration}`.trim() : "-"} />
-      </div>
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.07] pt-4">
-        <div className="flex items-center gap-2 text-sm text-zinc-400">
-          <Clock3 className="h-4 w-4" />
-          {relativeCheckedAt(result.checkedAt)}
+        <div className="rounded-full border border-white/10 bg-white/[0.045] px-3 py-1 text-xs font-bold text-zinc-300">
+          {isRelatedAvailabilityMode && results.length === 0
+            ? isFindingAlternatives
+              ? "Finding top 20"
+              : "Top 20 target"
+            : `${results.length} of ${totalCount}`}
         </div>
-        <RegistrarLinkButton result={result} />
       </div>
+
+      {results.length === 0 ? (
+        <div className="p-8 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-300/25 bg-amber-300/10 text-amber-100">
+            {isFindingAlternatives ? (
+              <RefreshCw className="h-5 w-5 animate-spin" />
+            ) : (
+              <CircleHelp className="h-5 w-5" />
+            )}
+          </div>
+          <h3 className="mt-4 text-lg font-semibold text-white">
+            {isFindingAlternatives
+              ? "Finding top 20 available related domains"
+              : filter === "available"
+              ? "No confirmed available domains in this run"
+              : "No domains match this filter"}
+          </h3>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-400">
+            {isFindingAlternatives
+              ? "Checking keyword-anchored commercial prefixes and suffixes across high-value extensions."
+              : "Available-only shows registrar/RDAP-confirmed results and excludes mock simulations, taken names, and manual checks."}
+          </p>
+          {!isFindingAlternatives && (
+            <SecondaryButton onClick={onShowAll} className="mt-5">
+              Review unavailable and needs-check results
+            </SecondaryButton>
+          )}
+        </div>
+      ) : (
+        <div className="divide-y divide-white/[0.06]">
+          {results.map((result) => {
+            const evidence = evidenceSummary(result);
+            const price = priceLabel(result);
+
+            return (
+              <div
+                key={result.domain}
+                className="grid gap-3 px-4 py-3 transition hover:bg-white/[0.025] lg:grid-cols-[minmax(220px,0.9fr)_minmax(360px,1.5fr)_auto]"
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-mono text-lg font-bold tracking-normal text-white">
+                    {result.domain}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                    <span>{relativeCheckedAt(result.checkedAt)}</span>
+                  </div>
+                </div>
+
+                <div className="min-w-0">
+                  <div className="flex min-h-8 flex-wrap items-center gap-2">
+                    <AvailabilityBadge result={result} />
+                    <span
+                      title={evidence}
+                      className="inline-flex items-center gap-1 rounded-full border border-cyan-200/20 bg-cyan-200/8 px-2.5 py-1 text-xs font-bold text-cyan-100"
+                    >
+                      {evidenceLabel(result)}
+                      <CircleHelp className="h-3 w-3 opacity-75" />
+                    </span>
+                    {price && (
+                      <span className="rounded-full border border-white/10 bg-white/[0.045] px-2.5 py-1 text-xs font-bold text-zinc-200">
+                        {price}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-500">
+                    {evidence}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2">
+                  <IconButton
+                    label={saved.has(result.domain) ? "Remove saved" : "Save domain"}
+                    active={saved.has(result.domain)}
+                    onClick={() => onSave(result)}
+                  >
+                    <Star className={cn("h-4 w-4", saved.has(result.domain) && "fill-current")} />
+                  </IconButton>
+                  <RegistrarLinkButton result={result} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </GlassCard>
   );
 }
@@ -1376,7 +2043,7 @@ function BrandScoreGauge({
   const score = recommendation?.brandScore ?? 0;
   const circumference = 2 * Math.PI * 42;
   const stroke = circumference - (score / 100) * circumference;
-  const available = results.filter((result) => result.status === "available_confirmed").length;
+  const available = results.filter(isRegistrarAvailable).length;
   const manual = results.filter((result) =>
     ["manual_check_required", "restricted", "unknown", "rate_limited"].includes(result.status),
   ).length;
@@ -1388,7 +2055,9 @@ function BrandScoreGauge({
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-100/70">
             Brand Score
           </p>
-          <h2 className="mt-1 text-2xl font-semibold">{recommendation?.name ?? "No run yet"}</h2>
+          <h2 className="mt-1 text-2xl font-semibold">
+            {recommendation?.name ?? "No available name yet"}
+          </h2>
         </div>
         <Gauge className="h-5 w-5 text-cyan-100" />
       </div>
@@ -1424,24 +2093,36 @@ function BrandScoreGauge({
         </div>
       </div>
       <p className="mt-4 min-h-12 text-sm leading-6 text-zinc-400">
-        {recommendation?.explanation ?? "Run a search or NameLab generation to populate recommendations."}
+        {recommendation?.explanation ??
+          "Confirmed available names will appear here after registrar/RDAP-backed checks."}
       </p>
       <div className="mt-5 grid grid-cols-3 gap-3">
         <MetricTile label="Checked" value={results.length} />
         <MetricTile label="Confirmed" value={available} />
-        <MetricTile label="Manual" value={manual} />
+        <MetricTile label="Needs check" value={manual} />
       </div>
     </GlassCard>
   );
 }
 
 function RecommendationPanel({
+  availableDomains,
   recommendations,
+  isFindingAlternatives = false,
   onCheck,
 }: {
+  availableDomains: DomainCheckResult[];
   recommendations: Recommendation[];
+  isFindingAlternatives?: boolean;
   onCheck: (names: string[]) => void;
 }) {
+  const recommendationByName = new Map(
+    recommendations.map((recommendation) => [
+      recommendation.name,
+      recommendation,
+    ]),
+  );
+
   return (
     <GlassCard className="p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -1449,28 +2130,37 @@ function RecommendationPanel({
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-100/70">
             Recommendations
           </p>
-          <h2 className="mt-1 text-xl font-semibold">Top 20 names</h2>
+          <h2 className="mt-1 text-xl font-semibold">Available recommendations</h2>
         </div>
         <IconButton
           label="Check top recommendations"
-          onClick={() => onCheck(recommendations.slice(0, 20).map((item) => item.name))}
-          disabled={recommendations.length === 0}
+          onClick={() =>
+            onCheck(
+              availableDomains
+                .slice(0, AVAILABLE_RECOMMENDATION_LIMIT)
+                .map((item) => item.name),
+            )
+          }
+          disabled={availableDomains.length === 0}
         >
           <Sparkles className="h-4 w-4" />
         </IconButton>
       </div>
       <div className="studio-scrollbar flex max-h-[32rem] flex-col gap-3 overflow-y-auto pr-1">
-        {recommendations.length === 0 ? (
+        {availableDomains.length === 0 ? (
           <div className="rounded-2xl border border-white/[0.07] bg-black/20 p-4 text-sm text-zinc-400">
-            Recommendations appear after the first search.
+            {isFindingAlternatives
+              ? "Finding top 20 available commercial-value recommendations."
+              : "No variants have passed live availability checks yet. Try different roots or configure a registrar API for stronger confirmation."}
           </div>
         ) : (
-          recommendations.slice(0, 20).map((recommendation, index) => (
+          availableDomains.slice(0, AVAILABLE_RECOMMENDATION_LIMIT).map((result, index) => (
             <RecommendationCard
-              key={recommendation.name}
-              recommendation={recommendation}
+              key={result.domain}
+              result={result}
+              recommendation={recommendationByName.get(result.name)}
               rank={index + 1}
-              onCheck={() => onCheck([recommendation.name])}
+              onCheck={() => onCheck([result.name])}
             />
           ))
         )}
@@ -1480,11 +2170,13 @@ function RecommendationPanel({
 }
 
 function RecommendationCard({
+  result,
   recommendation,
   rank,
   onCheck,
 }: {
-  recommendation: Recommendation;
+  result: DomainCheckResult;
+  recommendation?: Recommendation;
   rank: number;
   onCheck: () => void;
 }) {
@@ -1496,14 +2188,20 @@ function RecommendationCard({
     >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 truncate font-semibold text-white">
-          {rank}. {recommendation.name}
+          {rank}. {result.domain}
         </div>
         <span className="rounded-full bg-cyan-200/12 px-2.5 py-1 text-xs font-bold text-cyan-100">
-          {recommendation.brandScore}
+          {recommendation?.brandScore ?? getExtensionQuality(result.extension)}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <AvailabilityBadge result={result} />
+        <span className="rounded-full border border-cyan-200/20 bg-cyan-200/8 px-2.5 py-1 text-xs font-bold text-cyan-100">
+          {evidenceLabel(result)}
         </span>
       </div>
       <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-400">
-        {recommendation.explanation}
+        {recommendation?.explanation ?? evidenceSummary(result)}
       </p>
     </button>
   );
@@ -1545,12 +2243,12 @@ function ExtensionMatrix({
               <div className="truncate text-sm font-semibold text-zinc-200">{name}</div>
               {extensions.map((extension) => {
                 const result = groups.get(name)?.find((item) => item.extension === extension);
-                const meta = result ? STATUS_META[result.status] : undefined;
+                const meta = result ? statusMetaForResult(result) : undefined;
 
                 return (
                   <div
                     key={`${name}.${extension}`}
-                    title={result ? `${STATUS_META[result.status].label} via ${sourceLabel(result.source)}` : "Not checked"}
+                    title={result ? `${meta?.label} via ${sourceLabel(result.source)}` : "Not checked"}
                     className={cn(
                       "h-9 rounded-xl border border-white/10",
                       meta?.matrix ?? "bg-white/[0.04]",
@@ -1598,79 +2296,24 @@ function DomainStackCards({
                   <span className="text-xs font-bold text-cyan-100">{recommendation?.brandScore ?? "-"}</span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  {stack.map((result) => (
-                    <span
-                      key={result.domain}
-                      title={`${STATUS_META[result.status].label}; source: ${sourceLabel(result.source)}`}
-                      className={cn("rounded-full border px-2 py-1 text-xs font-bold", STATUS_META[result.status].tone)}
-                    >
-                      .{result.extension}
-                    </span>
-                  ))}
+                  {stack.map((result) => {
+                    const meta = statusMetaForResult(result);
+
+                    return (
+                      <span
+                        key={result.domain}
+                        title={`${meta.label}; source: ${sourceLabel(result.source)}`}
+                        className={cn("rounded-full border px-2 py-1 text-xs font-bold", meta.tone)}
+                      >
+                        .{result.extension}
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             );
           })
         )}
-      </div>
-    </GlassCard>
-  );
-}
-
-function CandidateTable({
-  results,
-  recommendations,
-  saved,
-  onSave,
-}: {
-  results: DomainCheckResult[];
-  recommendations: Recommendation[];
-  saved: Map<string, SavedDomain>;
-  onSave: (result: DomainCheckResult) => void;
-}) {
-  return (
-    <GlassCard className="overflow-hidden">
-      <div className="studio-scrollbar overflow-x-auto">
-        <table className="w-full min-w-[980px] text-left text-sm">
-          <thead className="border-b border-white/[0.08] text-xs uppercase tracking-[0.16em] text-zinc-500">
-            <tr>
-              {["Domain", "Availability", "Confidence", "Score", "Source", "Provider", "Checked", "Action"].map((header) => (
-                <th key={header} className="px-4 py-4 font-bold">
-                  {header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {results.map((result) => {
-              const recommendation = scoreForName(result.name, recommendations);
-
-              return (
-                <tr key={result.domain} className="border-b border-white/[0.055] last:border-0">
-                  <td className="px-4 py-4 font-mono font-bold text-white">{result.domain}</td>
-                  <td className="px-4 py-4">
-                    <AvailabilityBadge status={result.status} />
-                  </td>
-                  <td className="px-4 py-4">
-                    <ConfidenceBadge confidence={result.confidence} />
-                  </td>
-                  <td className="px-4 py-4 font-bold text-cyan-100">{recommendation?.brandScore ?? "-"}</td>
-                  <td className="px-4 py-4 text-zinc-300">{sourceLabel(result.source)}</td>
-                  <td className="px-4 py-4 text-zinc-400">{result.providerName}</td>
-                  <td className="px-4 py-4 text-zinc-400">{relativeCheckedAt(result.checkedAt)}</td>
-                  <td className="px-4 py-4">
-                    <div className="flex items-center gap-2">
-                      <IconButton label={saved.has(result.domain) ? "Remove saved" : "Save"} active={saved.has(result.domain)} onClick={() => onSave(result)}>
-                        <Save className="h-4 w-4" />
-                      </IconButton>
-                      <RegistrarLinkButton result={result} />
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
       </div>
     </GlassCard>
   );
@@ -1992,7 +2635,7 @@ function SavedProjects({
                 <div>
                   <div className="font-mono text-lg font-bold text-white">{item.domain}</div>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <AvailabilityBadge status={item.result.status} />
+                    <AvailabilityBadge result={item.result} />
                     <span className="rounded-full border border-cyan-200/30 bg-cyan-200/10 px-2.5 py-1 text-xs font-bold text-cyan-100">
                       {item.recommendation?.brandScore ?? "-"} score
                     </span>

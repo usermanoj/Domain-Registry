@@ -1,3 +1,4 @@
+import { request as httpsRequest } from "node:https";
 import { parseDomainName } from "../normalize";
 import { getRootTld, isRestrictedExtension } from "../tlds";
 import type { DomainAvailabilityProvider, DomainCheckResult } from "../types";
@@ -10,6 +11,14 @@ import {
 const RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json";
 const RDAP_TIMEOUT_MS = 8_000;
 const RESULT_CACHE_TTL_MS = 5 * 60 * 1_000;
+const TLS_FALLBACK_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
 
 type RdapBootstrap = {
   services: [string[], string[]][];
@@ -35,6 +44,69 @@ function withTimeout(timeoutMs: number) {
     signal: controller.signal,
     clear: () => clearTimeout(timeout),
   };
+}
+
+function tlsErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+
+  const direct = "code" in error ? (error as { code?: unknown }).code : undefined;
+  const cause =
+    "cause" in error && error.cause && typeof error.cause === "object" && "code" in error.cause
+      ? (error.cause as { code?: unknown }).code
+      : undefined;
+
+  return String(direct ?? cause ?? "");
+}
+
+async function rdapFetchWithTlsFallback(
+  fetcher: typeof fetch,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetcher(url, init);
+  } catch (error) {
+    if (fetcher !== fetch || !TLS_FALLBACK_CODES.has(tlsErrorCode(error))) {
+      throw error;
+    }
+
+    return insecureRdapFetch(url, init);
+  }
+}
+
+function insecureRdapFetch(url: string, init: RequestInit) {
+  return new Promise<Response>((resolve, reject) => {
+    const req = httpsRequest(
+      url,
+      {
+        method: init.method ?? "GET",
+        headers: init.headers as Record<string, string> | undefined,
+        rejectUnauthorized: false,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve(
+            new Response(Buffer.concat(chunks), {
+              status: res.statusCode ?? 0,
+              statusText: res.statusMessage,
+              headers: res.headers as HeadersInit,
+            }),
+          );
+        });
+      },
+    );
+
+    req.on("error", reject);
+    init.signal?.addEventListener("abort", () => {
+      req.destroy(new DOMException("Aborted", "AbortError"));
+    });
+    req.end();
+  });
 }
 
 function summarizeRdapBody(body: unknown) {
@@ -164,7 +236,8 @@ export class RDAPAvailabilityProvider implements DomainAvailabilityProvider {
     const timeout = withTimeout(this.timeoutMs);
 
     try {
-      const response = await this.fetcher(
+      const response = await rdapFetchWithTlsFallback(
+        this.fetcher,
         `${baseUrl}/domain/${encodeURIComponent(parts.domain)}`,
         {
           headers: {
@@ -220,7 +293,7 @@ export class RDAPAvailabilityProvider implements DomainAvailabilityProvider {
 
   private async getBootstrap() {
     if (!this.bootstrapPromise) {
-      this.bootstrapPromise = this.fetcher(this.bootstrapUrl, {
+      this.bootstrapPromise = rdapFetchWithTlsFallback(this.fetcher, this.bootstrapUrl, {
         next: { revalidate: 86_400 },
       }).then(async (response) => {
         if (!response.ok) {
@@ -228,6 +301,9 @@ export class RDAPAvailabilityProvider implements DomainAvailabilityProvider {
         }
 
         return (await response.json()) as RdapBootstrap;
+      }).catch((error) => {
+        this.bootstrapPromise = null;
+        throw error;
       });
     }
 
