@@ -28,6 +28,15 @@ export type AvailabilitySource = (typeof AVAILABILITY_SOURCES)[number];
 export type ProviderMode = "mock" | "hybrid" | "live";
 
 export type GenerationStyle =
+  | "sanskrit_hindi"
+  | "spiritual"
+  | "bizarre_brandable"
+  | "ai_native"
+  | "agentic_automation"
+  | "data_analytics"
+  | "workflow_ops"
+  | "revenue_growth"
+  | "singapore_global"
   | "sanskrit"
   | "western"
   | "bizarre"
@@ -104,15 +113,24 @@ export type GeneratedCandidate = {
   name: string;
   style: GenerationStyle | "transformation";
   rationale: string;
+  method?: string;
+  tags?: string[];
 };
 
 export type RecommendationSubscores = {
   memorability: number;
+  pronunciation: number;
   pronunciationEase: number;
+  aiRelevance: number;
   spellingClarity: number;
   brandStrength: number;
   enterpriseCredibility: number;
+  uniqueness: number;
+  spiritualDepth: number;
   spiritualIndianDepth: number;
+  dataAutomationRelevance: number;
+  shortness: number;
+  extensionAvailability: number;
   aiNativeFeel: number;
   domainStackQuality: number;
   riskOfConfusion: number;
@@ -136,7 +154,11 @@ export type DomainCheckResponse = {
 };
 
 export type GenerateNamesResponse = {
+  checkedAt: string;
+  mode: ProviderMode;
+  extensions: string[];
   seedTerms: string[];
   candidates: GeneratedCandidate[];
+  results: DomainCheckResult[];
   recommendations: Recommendation[];
 };

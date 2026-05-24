@@ -20,6 +20,7 @@ export const IANA_TLD_LIST_URL =
 
 const RESTRICTED_EXTENSIONS = new Set(["edu", "gov", "mil", "int", "gov.sg"]);
 const SINGAPORE_EXTENSIONS = new Set(["sg", "com.sg"]);
+const KNOWN_EXTENSIONS = new Set<string>(DEFAULT_EXTENSIONS);
 
 const QUALITY_BY_EXTENSION = new Map<string, number>([
   ["com", 98],
@@ -47,6 +48,41 @@ export function isRestrictedExtension(extension: string) {
 
 export function isSingaporeExtension(extension: string) {
   return SINGAPORE_EXTENSIONS.has(extension.toLowerCase());
+}
+
+export function isKnownExtension(extension: string) {
+  return KNOWN_EXTENSIONS.has(extension.toLowerCase().replace(/^\.+|\.+$/g, ""));
+}
+
+export function validateCatalogExtension(
+  extension: string,
+  { allowCustom = false }: { allowCustom?: boolean } = {},
+) {
+  const normalized = extension.toLowerCase().trim().replace(/^\.+|\.+$/g, "");
+
+  if (!normalized) {
+    return {
+      normalized,
+      valid: false,
+      reason: "Extension is empty.",
+    };
+  }
+
+  if (isKnownExtension(normalized)) {
+    return {
+      normalized,
+      valid: true,
+      reason: "Extension is present in the local catalog.",
+    };
+  }
+
+  return {
+    normalized,
+    valid: allowCustom,
+    reason: allowCustom
+      ? "Custom extension accepted by explicit opt-in."
+      : "Extension is not present in the local catalog.",
+  };
 }
 
 export function getExtensionQuality(extension: string) {
@@ -88,6 +124,15 @@ export function getExtensionRules(extension: string): DomainRuleNote[] {
 
   return rules;
 }
+
+export const TLD_CATALOG = DEFAULT_EXTENSIONS.map((extension) => ({
+  extension,
+  rootTld: getRootTld(extension),
+  restricted: isRestrictedExtension(extension),
+  singapore: isSingaporeExtension(extension),
+  quality: getExtensionQuality(extension),
+  rules: getExtensionRules(extension),
+}));
 
 export function getRegistrarUrl(domain: string, extension: string) {
   const normalized = extension.toLowerCase();

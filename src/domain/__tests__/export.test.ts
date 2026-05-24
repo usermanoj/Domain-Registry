@@ -24,11 +24,18 @@ const recommendation: Recommendation = {
   explanation: "Good candidate.",
   subscores: {
     memorability: 80,
+    pronunciation: 80,
     pronunciationEase: 80,
+    aiRelevance: 80,
     spellingClarity: 80,
     brandStrength: 80,
     enterpriseCredibility: 80,
+    uniqueness: 80,
+    spiritualDepth: 50,
     spiritualIndianDepth: 50,
+    dataAutomationRelevance: 80,
+    shortness: 80,
+    extensionAvailability: 100,
     aiNativeFeel: 80,
     domainStackQuality: 80,
     riskOfConfusion: 10,
@@ -46,6 +53,7 @@ describe("export helpers", () => {
 
     expect(csv).toContain("aptava.ai");
     expect(csv).toContain("82");
+    expect(csv).toContain("available_confirmed");
     expect(String.fromCharCode(xlsx[0], xlsx[1])).toBe("PK");
   });
 });

@@ -2,16 +2,20 @@ import { describe, expect, it } from "vitest";
 import { checkDomains, DomainAvailabilityEngine } from "../availability-engine";
 import { MockAvailabilityProvider, mockProvider } from "../providers/mock-provider";
 import { NamecheapAvailabilityProvider } from "../providers/namecheap-provider";
+import { buildAvailabilityResult } from "../providers/provider-utils";
 import { RDAPAvailabilityProvider } from "../providers/rdap-provider";
 import { RestrictedTldProvider } from "../providers/restricted-tld-provider";
 import { SGAvailabilityProvider } from "../providers/sg-provider";
+import type { DomainAvailabilityProvider } from "../types";
 
 describe("provider adapters and engine", () => {
   it("mock provider returns normalized status without DNS checks", async () => {
     const result = await mockProvider.check("aptava.ai");
+    const repeated = await mockProvider.check("aptava.ai");
 
     expect(result.providerName).toBe("MockAvailabilityProvider");
     expect(result.source).toBe("mock");
+    expect(repeated.status).toBe(result.status);
     expect(result.status).toMatch(
       /available_confirmed|taken_confirmed|premium_available|manual_check_required/,
     );
@@ -47,6 +51,75 @@ describe("provider adapters and engine", () => {
     await expect(engine.check("-bad.ai")).resolves.toMatchObject({
       status: "invalid",
       confidence: "high",
+    });
+  });
+
+  it("falls back when a provider returns unknown or throws", async () => {
+    const failingProvider: DomainAvailabilityProvider = {
+      name: "FailingProvider",
+      supportsTld: () => true,
+      check: async () => {
+        throw new Error("provider down");
+      },
+      checkBulk: async () => {
+        throw new Error("provider down");
+      },
+    };
+    const unknownProvider: DomainAvailabilityProvider = {
+      name: "UnknownProvider",
+      supportsTld: () => true,
+      check: async (domain) =>
+        buildAvailabilityResult({
+          domain,
+          status: "unknown",
+          confidence: "low",
+          source: "manual",
+          providerName: "UnknownProvider",
+          premium: false,
+        }),
+      checkBulk: async (domains) => Promise.all(domains.map((domain) => unknownProvider.check(domain))),
+    };
+    const fallbackProvider: DomainAvailabilityProvider = {
+      name: "FallbackProvider",
+      supportsTld: () => true,
+      check: async (domain) =>
+        buildAvailabilityResult({
+          domain,
+          status: "available_confirmed",
+          confidence: "high",
+          source: "mock",
+          providerName: "FallbackProvider",
+          premium: false,
+        }),
+      checkBulk: async (domains) => Promise.all(domains.map((domain) => fallbackProvider.check(domain))),
+    };
+    const engine = new DomainAvailabilityEngine([
+      failingProvider,
+      unknownProvider,
+      fallbackProvider,
+    ]);
+
+    await expect(engine.check("aptava.ai")).resolves.toMatchObject({
+      status: "available_confirmed",
+      providerName: "FallbackProvider",
+    });
+  });
+
+  it("unsupported TLDs become manual checks when no provider supports them", async () => {
+    const engine = new DomainAvailabilityEngine([
+      {
+        name: "NoSupportProvider",
+        supportsTld: () => false,
+        check: async () => {
+          throw new Error("should not be called");
+        },
+        checkBulk: async () => [],
+      },
+    ]);
+
+    await expect(engine.check("aptava.unsupported")).resolves.toMatchObject({
+      status: "manual_check_required",
+      providerName: "DomainAvailabilityEngine",
     });
   });
 

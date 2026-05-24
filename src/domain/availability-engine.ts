@@ -69,7 +69,13 @@ export class DomainAvailabilityEngine {
         continue;
       }
 
-      const result = await provider.check(parts.domain);
+      let result: DomainCheckResult;
+
+      try {
+        result = await provider.check(parts.domain);
+      } catch {
+        continue;
+      }
 
       if (result.status !== "unknown") {
         return result;
