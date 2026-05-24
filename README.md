@@ -1,36 +1,119 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Domain Intelligence Studio
 
-## Getting Started
+Premium AI-native domain research studio for generating, checking, scoring, comparing, shortlisting, exporting, and preparing to register domain names.
 
-First, run the development server:
+The app deliberately does not use DNS failure, website absence, or HTTP behavior as proof of availability. Domain checks go through provider adapters with explicit confidence, source, and timestamp.
+
+## Stack
+
+- Next.js App Router, TypeScript, Tailwind CSS
+- Framer Motion, Recharts, lucide-react
+- Provider adapters: mock, RDAP through IANA bootstrap, Namecheap scaffold
+- Prisma schema for PostgreSQL persistence
+- BullMQ/Redis queue scaffold for Phase 2 bulk jobs
+- Vitest unit tests and Playwright E2E tests
+- Docker-first local deployment
+
+## Quick Start
 
 ```bash
+npm install
+cp .env.example .env
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Checks
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run typecheck
+npm run lint
+npm run test
+npm run test:e2e
+```
 
-## Learn More
+## Docker
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+cp .env.example .env
+docker compose up --build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Services:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- App: `http://127.0.0.1:3000`
+- PostgreSQL: `localhost:5432`
+- Redis: `localhost:6379`
 
-## Deploy on Vercel
+## Provider Modes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `mock`: deterministic local results for development and demos.
+- `hybrid`: Namecheap when configured, then RDAP, then mock fallback.
+- `live`: Namecheap when configured, then RDAP; inconclusive registries return manual-check states.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Availability status values:
+
+- `available_confirmed`
+- `taken_confirmed`
+- `premium_available`
+- `restricted`
+- `unknown`
+- `rate_limited`
+- `invalid`
+- `manual_check_required`
+
+Provider confidence levels are stored separately as `high`, `medium`, or `low`.
+
+`.edu` is always marked eligibility-restricted. `.sg` and `.com.sg` include Singapore registry notes and registrar action links.
+
+## Optional Namecheap Configuration
+
+Set these in `.env` to enable the registrar adapter:
+
+```bash
+NAMECHEAP_API_BASE_URL=https://api.sandbox.namecheap.com/xml.response
+NAMECHEAP_API_USER=
+NAMECHEAP_API_KEY=
+NAMECHEAP_USERNAME=
+NAMECHEAP_CLIENT_IP=
+```
+
+The adapter calls `namecheap.domains.check` and maps availability, premium status, and rate limits into the normalized confidence model.
+
+## Database
+
+The Prisma schema lives at [prisma/schema.prisma](./prisma/schema.prisma). It models projects, search runs, domain results, recommendation scores, favorites, and watchlist alerts.
+
+Generate the client:
+
+```bash
+npm run prisma:generate
+```
+
+Create a migration after PostgreSQL is running:
+
+```bash
+npm run prisma:migrate
+```
+
+## Deployment Notes
+
+Vercel:
+
+- Set `DATABASE_URL` to a managed PostgreSQL URL.
+- Set `REDIS_URL` to a managed Redis URL for Phase 2 queues/cache.
+- Configure Namecheap credentials only in server-side environment variables.
+- Keep provider mode `live` or `hybrid` depending on whether mock fallback is acceptable.
+
+Docker:
+
+- Build with `docker compose up --build`.
+- Use external Postgres/Redis by overriding `DATABASE_URL` and `REDIS_URL`.
+- Run Prisma migrations before enabling persistence-backed Phase 2 features.
+
+## Project Docs
+
+- [Specification](./docs/SPEC.md)
+- [API Contracts](./docs/API.md)
+- [Architecture](./docs/ARCHITECTURE.md)

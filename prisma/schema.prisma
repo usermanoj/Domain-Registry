@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AvailabilityConfidence {
+  available_confirmed
+  taken_confirmed
+  premium_available
+  restricted
+  unknown
+  rate_limited
+  invalid
+  manual_check_required
+}
+
+enum ProviderMode {
+  mock
+  hybrid
+  live
+}
+
+model Project {
+  id          String       @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  searches    SearchRun[]
+  favorites   Favorite[]
+}
+
+model SearchRun {
+  id          String        @id @default(cuid())
+  projectId   String?
+  project     Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  query       String
+  mode        ProviderMode
+  extensions  String[]
+  createdAt   DateTime      @default(now())
+  results     DomainResult[]
+}
+
+model DomainResult {
+  id           String                 @id @default(cuid())
+  searchRunId  String?
+  searchRun    SearchRun?             @relation(fields: [searchRunId], references: [id], onDelete: Cascade)
+  name         String
+  domain       String
+  extension    String
+  confidence   AvailabilityConfidence
+  provider     String
+  source       String
+  checkedAt    DateTime
+  priceAmount  Decimal?               @db.Decimal(10, 2)
+  priceCurrency String?
+  pricePeriod  String?
+  isPremium    Boolean                @default(false)
+  registrarUrl String?
+  rules        Json?
+  score        RecommendationScore?
+  favorite     Favorite?
+
+  @@unique([searchRunId, domain])
+  @@index([domain])
+  @@index([confidence])
+}
+
+model RecommendationScore {
+  id                    String       @id @default(cuid())
+  domainResultId         String       @unique
+  domainResult           DomainResult @relation(fields: [domainResultId], references: [id], onDelete: Cascade)
+  brandScore             Int
+  memorability           Int
+  pronunciationEase      Int
+  spellingClarity        Int
+  brandStrength          Int
+  enterpriseCredibility  Int
+  spiritualIndianDepth   Int
+  aiNativeFeel           Int
+  domainStackQuality     Int
+  riskOfConfusion        Int
+  length                 Int
+  extensionQuality       Int
+  availabilityConfidence Int
+  explanation            String
+}
+
+model Favorite {
+  id             String        @id @default(cuid())
+  projectId      String
+  project        Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  domainResultId String?       @unique
+  domainResult   DomainResult? @relation(fields: [domainResultId], references: [id], onDelete: SetNull)
+  domain         String
+  notes          String?
+  createdAt      DateTime      @default(now())
+
+  @@unique([projectId, domain])
+}
+
+model WatchlistAlert {
+  id        String   @id @default(cuid())
+  domain    String
+  email     String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
