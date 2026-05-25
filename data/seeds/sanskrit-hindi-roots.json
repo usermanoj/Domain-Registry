@@ -1,0 +1,62 @@
+{
+  "trust": {
+    "aliases": ["trust", "assurance", "credible", "reliable", "faith"],
+    "roots": ["apta", "vishwas", "shraddha", "nishtha"],
+    "meaning": "trust, confidence, reliability"
+  },
+  "truth": {
+    "aliases": ["truth", "true", "verified", "honesty", "integrity"],
+    "roots": ["satya", "ritam"],
+    "meaning": "truth, cosmic order, correctness"
+  },
+  "action": {
+    "aliases": ["action", "do", "execute", "task", "work"],
+    "roots": ["kriya", "karya", "karma"],
+    "meaning": "action, work, execution"
+  },
+  "method_reasoning": {
+    "aliases": ["method", "reasoning", "logic", "policy", "rules"],
+    "roots": ["yukti", "tarka"],
+    "meaning": "method, argument, reasoning"
+  },
+  "evidence": {
+    "aliases": ["evidence", "proof", "signal", "validation"],
+    "roots": ["pramana"],
+    "meaning": "proof, valid evidence, source of knowledge"
+  },
+  "wisdom": {
+    "aliases": ["wisdom", "knowledge", "mind", "intelligence", "insight"],
+    "roots": ["medha", "vivek", "veda", "bodhi"],
+    "meaning": "wisdom, discernment, knowledge"
+  },
+  "flow": {
+    "aliases": ["flow", "stream", "pipeline", "process"],
+    "roots": ["pravah", "nadi", "dhara"],
+    "meaning": "flow, river, stream"
+  },
+  "rules_governance": {
+    "aliases": ["rules", "governance", "policy", "control", "order"],
+    "roots": ["niti", "niyam", "dharma"],
+    "meaning": "policy, rule, order, duty"
+  },
+  "light_energy": {
+    "aliases": ["light", "energy", "spark", "life", "force"],
+    "roots": ["tejas", "ojas", "prana", "jyoti"],
+    "meaning": "radiance, vitality, life force, light"
+  },
+  "automation": {
+    "aliases": ["automation", "agentic", "agent", "auto", "orchestrate"],
+    "roots": ["yantra", "doot"],
+    "meaning": "machine, instrument, messenger"
+  },
+  "revenue_growth": {
+    "aliases": ["revenue", "growth", "sales", "profit", "value"],
+    "roots": ["artha", "vriddhi", "labh"],
+    "meaning": "value, prosperity, growth, gain"
+  },
+  "efficiency": {
+    "aliases": ["efficiency", "speed", "lean", "productive"],
+    "roots": ["daksha", "laghu", "shighra"],
+    "meaning": "skillful, light, swift"
+  }
+}

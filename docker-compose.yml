@@ -2,16 +2,57 @@ services:
   app:
     build:
       context: .
+      target: runner
+    image: domain-intelligence-studio:local
     ports:
-      - "3000:3000"
-    env_file:
-      - .env
+      - "${APP_PORT:-3000}:3000"
     environment:
-      DATABASE_URL: postgresql://domain:domain@postgres:5432/domain_intelligence?schema=public
-      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://127.0.0.1:3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://domain:domain@postgres:5432/domain_intelligence?schema=public}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      NAMECHEAP_API_BASE_URL: ${NAMECHEAP_API_BASE_URL:-https://api.sandbox.namecheap.com/xml.response}
+      NAMECHEAP_API_USER: ${NAMECHEAP_API_USER:-}
+      NAMECHEAP_API_KEY: ${NAMECHEAP_API_KEY:-}
+      NAMECHEAP_CLIENT_IP: ${NAMECHEAP_CLIENT_IP:-}
+      NAMECHEAP_USERNAME: ${NAMECHEAP_USERNAME:-}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      GODADDY_API_KEY: ${GODADDY_API_KEY:-}
+      GODADDY_API_SECRET: ${GODADDY_API_SECRET:-}
+      PORKBUN_API_KEY: ${PORKBUN_API_KEY:-}
+      PORKBUN_SECRET_API_KEY: ${PORKBUN_SECRET_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      USPTO_TRADEMARK_SEARCH_URL: ${USPTO_TRADEMARK_SEARCH_URL:-https://tmsearch.uspto.gov/prod-stage-v1-0-0/tmsearch}
+      DOMAIN_SALES_DATA_PATH: ${DOMAIN_SALES_DATA_PATH:-}
+      DOMAIN_SALES_COMPARABLES_URL: ${DOMAIN_SALES_COMPARABLES_URL:-}
+      ENABLE_LIVE_BRAND_INTELLIGENCE: ${ENABLE_LIVE_BRAND_INTELLIGENCE:-true}
+      TRADEMARK_CHECK_TIMEOUT_MS: ${TRADEMARK_CHECK_TIMEOUT_MS:-3500}
+      BRAND_HANDLE_CHECK_TIMEOUT_MS: ${BRAND_HANDLE_CHECK_TIMEOUT_MS:-2500}
+      BRAND_INTELLIGENCE_CACHE_TTL_MS: ${BRAND_INTELLIGENCE_CACHE_TTL_MS:-21600000}
+      LIVE_BRAND_INTELLIGENCE_NAME_LIMIT: ${LIVE_BRAND_INTELLIGENCE_NAME_LIMIT:-12}
+      DEFAULT_CACHE_TTL_HOURS: ${DEFAULT_CACHE_TTL_HOURS:-24}
+      ENABLE_MOCK_PROVIDER: ${ENABLE_MOCK_PROVIDER:-true}
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
@@ -20,17 +61,29 @@ services:
       POSTGRES_PASSWORD: domain
       POSTGRES_DB: domain_intelligence
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U domain -d domain_intelligence"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   postgres-data:

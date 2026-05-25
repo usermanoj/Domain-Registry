@@ -8,6 +8,8 @@ import {
   summarizeResults,
   validationError,
 } from "@/app/api/_lib/domain-api";
+import { buildPortfolioInsight } from "@/domain/portfolio-intelligence";
+import { recordSearchRun } from "@/server/persistence/intelligence-store";
 
 export const runtime = "nodejs";
 
@@ -25,12 +27,28 @@ export async function POST(request: Request) {
       extensions: parsed.data.extensions,
       domains: parsed.data.domains.length ? parsed.data.domains : undefined,
       mode: parsed.data.mode,
+      includeExternalIntelligence: parsed.data.includeExternalIntelligence,
+    });
+
+    const queryId = newApiId("qry");
+
+    void recordSearchRun({
+      id: queryId,
+      query: parsed.data.domains.length
+        ? parsed.data.domains.join(", ")
+        : parsed.data.names.join(", "),
+      mode: parsed.data.mode,
+      extensions: parsed.data.extensions,
+      checkedAt: new Date().toISOString(),
+      results,
+      recommendations: [],
     });
 
     return NextResponse.json({
-      queryId: newApiId("qry"),
+      queryId,
       results,
       summary: summarizeResults(results),
+      portfolioInsight: buildPortfolioInsight(results, []),
     });
   } catch (error) {
     return apiError(

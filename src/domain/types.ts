@@ -100,6 +100,83 @@ export type DomainCheckResult = {
   name: string;
   extension: string;
   rules: DomainRuleNote[];
+  evidence?: DomainEvidenceRecord[];
+  intelligence?: DomainIntelligenceSummary;
+};
+
+export type DomainEvidenceRecord = {
+  domain: string;
+  providerName: string;
+  source: AvailabilitySource;
+  status: AvailabilityStatus;
+  confidence: ConfidenceLevel;
+  checkedAt: string;
+  premium: boolean;
+  priceRegistration?: number;
+  priceRenewal?: number;
+  currency?: string;
+  registrarUrl?: string;
+  rawSummary?: string;
+  errorCode?: string;
+};
+
+export type DomainSignalConflict = {
+  kind: "availability_conflict" | "price_conflict" | "policy_conflict";
+  severity: "low" | "medium" | "high";
+  message: string;
+  providers: string[];
+};
+
+export type DomainEvidenceLedger = {
+  domain: string;
+  evidence: DomainEvidenceRecord[];
+  registrarEvidence: DomainEvidenceRecord[];
+  registryEvidence: DomainEvidenceRecord[];
+  conflicts: DomainSignalConflict[];
+  hasRegistrarAvailability: boolean;
+  hasRegistrarTaken: boolean;
+  providerSummary: string;
+};
+
+export type IntelligenceSignalStatus =
+  | "clear"
+  | "conflict"
+  | "partial"
+  | "manual_check"
+  | "unknown";
+
+export type IntelligenceSignalKind =
+  | "trademark"
+  | "handle"
+  | "app_store"
+  | "market_comparable"
+  | "preference"
+  | "audience"
+  | "availability";
+
+export type DomainIntelligenceSignal = {
+  kind: IntelligenceSignalKind;
+  label: string;
+  status: IntelligenceSignalStatus;
+  confidence: ConfidenceLevel;
+  source: string;
+  detail: string;
+  checkedAt: string;
+  url?: string;
+  scoreImpact?: number;
+  metadata?: Record<string, string | number | boolean | null>;
+};
+
+export type DomainIntelligenceSummary = {
+  commercialScore: number;
+  riskScore: number;
+  confidenceScore: number;
+  valuationUsd: number;
+  launchReadiness: number;
+  labels: string[];
+  warnings: string[];
+  reasons: string[];
+  signals: DomainIntelligenceSignal[];
 };
 
 export type DomainAvailabilityProvider = {
@@ -146,11 +223,18 @@ export type Recommendation = {
   explanation: string;
 };
 
+export type AvailabilityCapabilities = {
+  registrarAvailability: boolean;
+  configuredRegistrarProviders: string[];
+};
+
 export type DomainCheckResponse = {
   checkedAt: string;
   mode: ProviderMode;
+  capabilities?: AvailabilityCapabilities;
   results: DomainCheckResult[];
   recommendations: Recommendation[];
+  portfolioInsight?: unknown;
 };
 
 export type GenerateNamesResponse = {

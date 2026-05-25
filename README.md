@@ -1,20 +1,25 @@
 # Domain Intelligence Studio
 
-Premium AI-native domain research studio for generating, checking, scoring, comparing, shortlisting, exporting, and preparing to register domain names.
+Premium AI-native domain research studio for generating, checking, scoring,
+shortlisting, exporting, and preparing to register domain names.
 
-The app deliberately does not use DNS failure, website absence, or HTTP behavior as proof of availability. Domain checks go through provider adapters with explicit confidence, source, and timestamp.
+The app deliberately does not use DNS failure, website absence, or HTTP behavior
+as proof of availability. Domain checks go through provider adapters with
+explicit status, confidence, source, and timestamp.
 
 ## Stack
 
-- Next.js App Router, TypeScript, Tailwind CSS
+- Next.js App Router, React, TypeScript, Tailwind CSS
 - Framer Motion, Recharts, lucide-react
-- Provider adapters: mock, RDAP through IANA bootstrap, Namecheap scaffold
-- Prisma schema for PostgreSQL persistence
-- BullMQ/Redis queue scaffold for Phase 2 bulk jobs
-- Vitest unit tests and Playwright E2E tests
-- Docker-first local deployment
+- Provider-based availability engine: mock, RDAP, Namecheap scaffold, SG/manual checks
+- PostgreSQL schema via Prisma
+- Redis-ready queue/cache configuration
+- Vitest unit/integration tests and Playwright E2E tests
+- Docker and Docker Compose deployment artifacts
 
-## Quick Start
+## Local Setup
+
+Install dependencies and start the Next.js dev server:
 
 ```bash
 npm install
@@ -24,16 +29,29 @@ npm run dev
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
 
-## Checks
+For local Postgres and Redis without containerizing the app:
 
 ```bash
-npm run typecheck
-npm run lint
-npm run test
-npm run test:e2e
+docker compose up -d postgres redis
 ```
 
-## Docker
+Then set these in `.env`:
+
+```bash
+DATABASE_URL=postgresql://domain:domain@localhost:5432/domain_intelligence?schema=public
+REDIS_URL=redis://localhost:6379
+```
+
+Generate Prisma client and run migrations when persistence-backed work is enabled:
+
+```bash
+npm run prisma:generate
+npm run prisma:migrate
+```
+
+## Docker Compose
+
+Run the full local stack:
 
 ```bash
 cp .env.example .env
@@ -46,30 +64,18 @@ Services:
 - PostgreSQL: `localhost:5432`
 - Redis: `localhost:6379`
 
-## Provider Modes
+The compose file provides container-safe defaults for `DATABASE_URL` and
+`REDIS_URL`, even if those values are blank in `.env`.
 
-- `mock`: deterministic local results for development and demos.
-- `hybrid`: Namecheap when configured, then RDAP, then mock fallback.
-- `live`: Namecheap when configured, then RDAP; inconclusive registries return manual-check states.
+## Provider Configuration
 
-Availability status values:
+Provider modes:
 
-- `available_confirmed`
-- `taken_confirmed`
-- `premium_available`
-- `restricted`
-- `unknown`
-- `rate_limited`
-- `invalid`
-- `manual_check_required`
+- `mock`: deterministic local results for development, tests, and demos.
+- `hybrid`: registrar/RDAP where configured, with mock fallback.
+- `live`: registrar/RDAP/manual results without treating mock data as real availability.
 
-Provider confidence levels are stored separately as `high`, `medium`, or `low`.
-
-`.edu` is always marked eligibility-restricted. `.sg` and `.com.sg` include Singapore registry notes and registrar action links.
-
-## Optional Namecheap Configuration
-
-Set these in `.env` to enable the registrar adapter:
+Namecheap variables:
 
 ```bash
 NAMECHEAP_API_BASE_URL=https://api.sandbox.namecheap.com/xml.response
@@ -79,41 +85,131 @@ NAMECHEAP_USERNAME=
 NAMECHEAP_CLIENT_IP=
 ```
 
-The adapter calls `namecheap.domains.check` and maps availability, premium status, and rate limits into the normalized confidence model.
-
-## Database
-
-The Prisma schema lives at [prisma/schema.prisma](./prisma/schema.prisma). It models projects, search runs, domain results, recommendation scores, favorites, and watchlist alerts.
-
-Generate the client:
+Operational variables:
 
 ```bash
-npm run prisma:generate
+DEFAULT_CACHE_TTL_HOURS=24
+ENABLE_MOCK_PROVIDER=true
 ```
 
-Create a migration after PostgreSQL is running:
+Keep registrar credentials server-side only. Do not expose them with
+`NEXT_PUBLIC_` prefixes.
+
+## Seed Data
+
+Portable seed artifacts live in [data/seeds](./data/seeds):
+
+- `default-tld-catalog.json`
+- `restricted-tlds.json`
+- `sanskrit-hindi-roots.json`
+- `tech-suffixes.json`
+
+The app currently reads TypeScript constants from `src/domain`; keep seed JSON
+and code constants synchronized until a database bootstrap script is introduced.
+
+## Tests
+
+Run static checks and the unit/integration suite:
 
 ```bash
-npm run prisma:migrate
+npm run typecheck
+npm run lint
+npm run test
 ```
 
-## Deployment Notes
+Build production output:
 
-Vercel:
+```bash
+npm run build
+```
 
-- Set `DATABASE_URL` to a managed PostgreSQL URL.
-- Set `REDIS_URL` to a managed Redis URL for Phase 2 queues/cache.
-- Configure Namecheap credentials only in server-side environment variables.
-- Keep provider mode `live` or `hybrid` depending on whether mock fallback is acceptable.
+## Playwright
 
-Docker:
+Install browser dependencies once:
 
-- Build with `docker compose up --build`.
-- Use external Postgres/Redis by overriding `DATABASE_URL` and `REDIS_URL`.
-- Run Prisma migrations before enabling persistence-backed Phase 2 features.
+```bash
+npx playwright install --with-deps chromium
+```
+
+Run the full E2E suite:
+
+```bash
+npm run test:e2e
+```
+
+Run one smoke flow:
+
+```bash
+npx playwright test tests/e2e/domain-studio.spec.ts --project=chromium --grep "user enters a seed name"
+```
+
+Playwright starts the dev server from `playwright.config.ts` when needed.
+
+## Deployment
+
+### Docker Host or Container Platform
+
+Build and run the standalone Next.js image:
+
+```bash
+docker build -t domain-intelligence-studio .
+docker run --rm -p 3000:3000 \
+  -e DATABASE_URL="postgresql://user:password@host:5432/db?schema=public" \
+  -e REDIS_URL="redis://host:6379" \
+  -e ENABLE_MOCK_PROVIDER="false" \
+  domain-intelligence-studio
+```
+
+For managed platforms such as Cloud Run, Fly.io, Render, Railway, ECS, or
+Kubernetes, deploy the Docker image and provide managed PostgreSQL/Redis URLs as
+environment variables. Run Prisma migrations as a release step before routing
+traffic to a persistence-backed deployment.
+
+### Node Server
+
+On a Node host:
+
+```bash
+npm ci
+npm run build
+npm run start -- --hostname 0.0.0.0
+```
+
+### Vercel or Next-Compatible Adapters
+
+This app uses Route Handlers and server-side provider credentials, so deploy as a
+server-backed Next.js app rather than static export. Configure:
+
+- `DATABASE_URL`
+- `REDIS_URL`
+- Namecheap credentials, if live registrar checks are enabled
+- `DEFAULT_CACHE_TTL_HOURS`
+- `ENABLE_MOCK_PROVIDER`
+
+## Domain Availability Caveats
+
+Availability is nuanced:
+
+- Only `available_confirmed` should be shown as a green available result.
+- `premium_available` means the name may be purchasable but pricing and renewal
+  terms need registrar confirmation.
+- `unknown`, `rate_limited`, and `manual_check_required` are not available
+  claims.
+- RDAP behavior varies by registry. A `404` can indicate likely availability for
+  some registries, but not all.
+- DNS records are used only as evidence that a domain is already in use; missing
+  DNS records are never treated as evidence of availability.
+- Mock results are simulated. They are excluded from available-only filters and
+  should never be used for purchasing decisions.
+- Restricted namespaces such as `.edu`, government, and military-style TLDs need
+  eligibility checks.
+- `.sg` and `.com.sg` should be verified through SGNIC-accredited registrars.
+- Registrar APIs remain the strongest confirmation source, but pricing and
+  availability can change between check and checkout.
 
 ## Project Docs
 
 - [Specification](./docs/SPEC.md)
 - [API Contracts](./docs/API.md)
+- [OpenAPI](./docs/openapi.yaml)
 - [Architecture](./docs/ARCHITECTURE.md)

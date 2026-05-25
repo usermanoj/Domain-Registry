@@ -1,0 +1,47 @@
+[
+  {
+    "tld": "edu",
+    "status": "restricted",
+    "requiresEligibility": true,
+    "recommendedResult": "restricted",
+    "explanation": ".edu is restricted to eligible accredited postsecondary institutions and should never be presented as generally available.",
+    "manualCheckUrl": "https://net.educause.edu/eligibility.htm"
+  },
+  {
+    "tld": "gov",
+    "status": "restricted",
+    "requiresEligibility": true,
+    "recommendedResult": "manual_check_required",
+    "explanation": "Government namespace with eligibility and authorization requirements."
+  },
+  {
+    "tld": "mil",
+    "status": "restricted",
+    "requiresEligibility": true,
+    "recommendedResult": "manual_check_required",
+    "explanation": "Military namespace with eligibility and authorization requirements."
+  },
+  {
+    "tld": "int",
+    "status": "restricted",
+    "requiresEligibility": true,
+    "recommendedResult": "manual_check_required",
+    "explanation": "Intergovernmental namespace with strict eligibility requirements."
+  },
+  {
+    "tld": "gov.sg",
+    "status": "restricted",
+    "requiresEligibility": true,
+    "recommendedResult": "manual_check_required",
+    "explanation": "Singapore government namespace requiring official eligibility validation.",
+    "manualCheckUrl": "https://www.sgnic.sg/registrars/accredited-registrars"
+  },
+  {
+    "tld": "edu.sg",
+    "status": "restricted",
+    "requiresEligibility": true,
+    "recommendedResult": "manual_check_required",
+    "explanation": "Singapore education namespace requiring registrar and eligibility validation.",
+    "manualCheckUrl": "https://www.sgnic.sg/registrars/accredited-registrars"
+  }
+]

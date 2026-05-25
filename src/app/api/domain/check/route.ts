@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
+import { newApiId } from "@/app/api/_lib/domain-api";
 import { checkDomains } from "@/domain/availability-engine";
+import { buildPortfolioInsight } from "@/domain/portfolio-intelligence";
 import { checkRequestSchema } from "@/domain/schemas";
+import { recordSearchRun } from "@/server/persistence/intelligence-store";
 
 export const runtime = "nodejs";
 
@@ -23,9 +26,26 @@ export async function POST(request: Request) {
       names: parsed.data.names,
       extensions: parsed.data.extensions,
       mode: parsed.data.mode,
+      includeExternalIntelligence: parsed.data.includeExternalIntelligence,
     });
 
-    return NextResponse.json(response);
+    const queryId = newApiId("qry");
+
+    void recordSearchRun({
+      id: queryId,
+      query: parsed.data.names.join(", "),
+      mode: parsed.data.mode,
+      extensions: parsed.data.extensions,
+      checkedAt: response.checkedAt,
+      results: response.results,
+      recommendations: response.recommendations,
+    });
+
+    return NextResponse.json({
+      queryId,
+      ...response,
+      portfolioInsight: buildPortfolioInsight(response.results, response.recommendations),
+    });
   } catch (error) {
     return NextResponse.json(
       {

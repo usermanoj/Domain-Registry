@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkDomains } from "@/domain/availability-engine";
 import { generateNameCandidates } from "@/domain/generator";
+import { buildPortfolioInsight } from "@/domain/portfolio-intelligence";
 import { generateRequestSchema } from "@/domain/schemas";
 
 export async function POST(request: Request) {
@@ -43,6 +44,10 @@ export async function POST(request: Request) {
       extensions: parsed.data.extensions,
       results: checked.results,
       recommendations: checked.recommendations.slice(0, 20),
+      portfolioInsight: buildPortfolioInsight(
+        checked.results,
+        checked.recommendations.slice(0, 20),
+      ),
     });
   } catch (error) {
     return NextResponse.json(

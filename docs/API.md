@@ -44,6 +44,9 @@ Contract request:
 }
 ```
 
+`providers: ["auto"]` routes to live providers. Use `providers: ["mock"]`
+only for deterministic demos and tests.
+
 Response:
 
 ```json

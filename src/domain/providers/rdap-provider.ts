@@ -247,10 +247,14 @@ export class RDAPAvailabilityProvider implements DomainAvailabilityProvider {
         },
       );
       const result = await this.resultFromResponse(parts.domain, baseUrl, response);
-      this.resultCache.set(parts.domain, {
-        expiresAt: Date.now() + this.cacheTtlMs,
-        result,
-      });
+
+      if (result.status !== "rate_limited") {
+        this.resultCache.set(parts.domain, {
+          expiresAt: Date.now() + this.cacheTtlMs,
+          result,
+        });
+      }
+
       return result;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -347,13 +351,16 @@ export class RDAPAvailabilityProvider implements DomainAvailabilityProvider {
     if (response.status === 404) {
       return buildAvailabilityResult({
         domain,
-        status: "available_confirmed",
+        status: "manual_check_required",
         confidence: "medium",
         source: "rdap",
         providerName: this.name,
         premium: false,
         rawSummary:
-          "RDAP returned 404/not found. This is treated as available only with medium confidence; registrar confirmation is recommended before purchase.",
+          "RDAP returned 404/not found. This is a registry signal only; registrar confirmation is required before treating the domain as available.",
+        errorCode: "RDAP_NOT_FOUND_REQUIRES_REGISTRAR",
+        errorMessage:
+          "RDAP not-found cannot confirm purchase availability for this domain.",
       });
     }
 

@@ -9,7 +9,7 @@ describe("POST /api/check", () => {
         body: JSON.stringify({
           name: "aptava",
           extensions: ["ai", "com", "sg", "com.sg"],
-          providers: ["auto"],
+          providers: ["mock"],
           forceRefresh: false,
         }),
       }),

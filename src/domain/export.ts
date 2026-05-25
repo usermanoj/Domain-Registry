@@ -13,6 +13,14 @@ export type ExportRow = {
   premium: string;
   checkedAt: string;
   brandScore: string;
+  commercialScore: string;
+  riskScore: string;
+  confidenceScore: string;
+  valuationUsd: string;
+  launchReadiness: string;
+  reasons: string;
+  signals: string;
+  warnings: string;
   registrarUrl: string;
 };
 
@@ -41,6 +49,17 @@ export function buildExportRows(
     premium: result.premium ? "yes" : "no",
     checkedAt: result.checkedAt,
     brandScore: scoreByName.get(result.name) ?? "",
+    commercialScore: result.intelligence?.commercialScore.toString() ?? "",
+    riskScore: result.intelligence?.riskScore.toString() ?? "",
+    confidenceScore: result.intelligence?.confidenceScore.toString() ?? "",
+    valuationUsd: result.intelligence?.valuationUsd.toString() ?? "",
+    launchReadiness: result.intelligence?.launchReadiness.toString() ?? "",
+    reasons: result.intelligence?.reasons.join(" | ") ?? "",
+    signals:
+      result.intelligence?.signals
+        .map((signal) => `${signal.label}:${signal.status}`)
+        .join(" | ") ?? "",
+    warnings: result.intelligence?.warnings.join(" | ") ?? "",
     registrarUrl: result.registrarUrl ?? "",
   }));
 }
@@ -66,6 +85,14 @@ export function toCsv(rows: ExportRow[]) {
     "premium",
     "checkedAt",
     "brandScore",
+    "commercialScore",
+    "riskScore",
+    "confidenceScore",
+    "valuationUsd",
+    "launchReadiness",
+    "reasons",
+    "signals",
+    "warnings",
     "registrarUrl",
   ];
 
@@ -111,6 +138,14 @@ function worksheetXml(rows: ExportRow[]) {
     "premium",
     "checkedAt",
     "brandScore",
+    "commercialScore",
+    "riskScore",
+    "confidenceScore",
+    "valuationUsd",
+    "launchReadiness",
+    "reasons",
+    "signals",
+    "warnings",
     "registrarUrl",
   ] as const;
   const table = [

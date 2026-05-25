@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { checkDomains, createAvailabilityEngine } from "@/domain/availability-engine";
+import {
+  attachDomainIntelligence,
+  attachLiveDomainIntelligence,
+} from "@/domain/domain-intelligence";
 import { buildExportRows, toCsv, toXlsxBuffer } from "@/domain/export";
 import {
   generateNameCandidates,
@@ -65,6 +69,7 @@ export const publicCheckRequestSchema = z
     providers: providerSelectionSchema.default(["auto"]),
     forceRefresh: z.boolean().default(false),
     allowCustomExtensions: z.boolean().default(false),
+    includeExternalIntelligence: z.boolean().default(false),
     mode: providerModeSchema.optional(),
   })
   .passthrough()
@@ -309,13 +314,22 @@ export function providerModeFromProviders(
 
   const normalized = providers.map((provider) => provider.toLowerCase());
 
-  if (normalized.includes("mock") || normalized.includes("auto")) {
+  if (normalized.includes("mock")) {
     return "mock";
   }
 
   if (
+    normalized.includes("auto") ||
     normalized.some((provider) =>
-      ["rdap", "namecheap", "registrar_api", "registrar"].includes(provider),
+      [
+        "rdap",
+        "namecheap",
+        "cloudflare",
+        "godaddy",
+        "porkbun",
+        "registrar_api",
+        "registrar",
+      ].includes(provider),
     )
   ) {
     return "live";
@@ -326,20 +340,23 @@ export function providerModeFromProviders(
 
 export function summarizeResults(results: DomainCheckResult[]): PublicCheckSummary {
   const availableCount = results.filter(
-    (result) => result.status === "available_confirmed",
+    (result) => result.status === "available_confirmed" && result.source === "registrar_api",
   ).length;
   const takenCount = results.filter(
     (result) => result.status === "taken_confirmed",
   ).length;
-  const unknownCount = results.filter((result) =>
-    ["unknown", "manual_check_required", "rate_limited", "invalid", "restricted"].includes(
-      result.status,
-    ),
+  const unknownCount = results.filter(
+    (result) =>
+      result.source === "mock" ||
+      ["unknown", "manual_check_required", "rate_limited", "invalid", "restricted"].includes(
+        result.status,
+      ),
   ).length;
   const bestDomain =
     [...results]
       .filter((result) =>
-        ["available_confirmed", "premium_available"].includes(result.status),
+        ["available_confirmed", "premium_available"].includes(result.status) &&
+        result.source === "registrar_api",
       )
       .sort((left, right) => {
         const availabilityDelta =
@@ -366,21 +383,34 @@ export async function runPublicDomainCheck({
   extensions,
   domains,
   mode,
+  includeExternalIntelligence = false,
 }: {
   names: string[];
   extensions: string[];
   domains?: string[];
   mode: ProviderMode;
+  includeExternalIntelligence?: boolean;
 }) {
   if (domains?.length) {
     const engine = createAvailabilityEngine(mode);
-    return engine.checkBulk(domains);
+    const results = await engine.checkBulk(domains);
+    const groupedByName = groupResultsByName(results);
+    const recommendations = rankRecommendations(
+      Array.from(groupedByName.entries()).map(([name, stack]) => scoreName(name, stack)),
+    );
+
+    return includeExternalIntelligence
+      ? attachLiveDomainIntelligence(results, recommendations, {
+          enabled: mode !== "mock",
+        })
+      : attachDomainIntelligence(results, recommendations);
   }
 
   const checked = await checkDomains({
     names,
     extensions,
     mode,
+    includeExternalIntelligence,
   });
 
   return checked.results;
@@ -484,8 +514,8 @@ export function publicTldCatalog() {
     const supportedProviders = entry.restricted
       ? ["manual"]
       : entry.singapore
-        ? ["mock", "manual"]
-        : ["mock", "rdap", "namecheap"];
+        ? ["mock", "manual", "rdap", "namecheap", "cloudflare", "godaddy", "porkbun"]
+        : ["mock", "rdap", "namecheap", "cloudflare", "godaddy", "porkbun"];
 
     return {
       tld: entry.extension,

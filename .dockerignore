@@ -5,5 +5,10 @@ playwright-report
 test-results
 .env
 .env.local
+.env.*.local
 .git
 npm-debug.log*
+dev-server*.log
+tsconfig.tsbuildinfo
+Dockerfile
+docker-compose.yml

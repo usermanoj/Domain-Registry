@@ -13,7 +13,7 @@ describe("POST /api/generate", () => {
           maxLength: 10,
           count: 10,
           extensions: ["ai"],
-          providers: ["auto"],
+          providers: ["mock"],
         }),
       }),
     );

@@ -16,6 +16,7 @@ export const checkRequestSchema = z
     extensions: z.array(z.string().min(1)).min(1).max(50),
     mode: providerModeSchema.default("mock"),
     includeSuggestions: z.boolean().default(true),
+    includeExternalIntelligence: z.boolean().default(false),
     allowCustomExtensions: z.boolean().default(false),
   })
   .transform((value) => ({

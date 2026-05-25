@@ -6,6 +6,7 @@ import {
   readJson,
   validationError,
 } from "@/app/api/_lib/domain-api";
+import { buildPortfolioInsight } from "@/domain/portfolio-intelligence";
 
 export const runtime = "nodejs";
 
@@ -32,7 +33,13 @@ export async function POST(request: Request) {
       mode: parsed.data.mode,
     });
 
-    return NextResponse.json(generated);
+    return NextResponse.json({
+      ...generated,
+      portfolioInsight: buildPortfolioInsight(
+        generated.candidates.flatMap((candidate) => candidate.domains),
+        generated.recommendations,
+      ),
+    });
   } catch (error) {
     return apiError(
       error instanceof Error ? error.message : "Unexpected generation failure.",

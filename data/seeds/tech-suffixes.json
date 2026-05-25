@@ -1,0 +1,46 @@
+{
+  "techSuffixes": [
+    "nex",
+    "iq",
+    "ra",
+    "va",
+    "ora",
+    "ava",
+    "ex",
+    "io",
+    "q",
+    "x",
+    "vyn",
+    "vanta"
+  ],
+  "aiSuffixes": ["ai", "iq", "syn", "agent", "ops", "flow", "data"],
+  "enterpriseSuffixes": [
+    "systems",
+    "logic",
+    "suite",
+    "cloud",
+    "signal",
+    "works",
+    "base"
+  ],
+  "shortSuffixes": ["ra", "va", "io", "ai", "iq", "ex"],
+  "inventedSyllables": [
+    "va",
+    "ra",
+    "na",
+    "ta",
+    "lo",
+    "mi",
+    "ki",
+    "yo",
+    "za",
+    "vi",
+    "sha",
+    "dra"
+  ],
+  "notes": [
+    "Use suffixes after brandability checks.",
+    "Avoid creating names too close to famous AI brands.",
+    "Prefer pronounceable 5-8 letter variants for shortlists and 8-12 letter variants for premium-mode candidates."
+  ]
+}

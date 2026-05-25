@@ -1,0 +1,143 @@
+[
+  {
+    "tld": "ai",
+    "label": ".ai",
+    "category": "ai",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 94
+  },
+  {
+    "tld": "com",
+    "label": ".com",
+    "category": "general",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 98
+  },
+  {
+    "tld": "sg",
+    "label": ".sg",
+    "category": "singapore",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "manual"],
+    "defaultEnabled": true,
+    "quality": 88,
+    "rules": [
+      {
+        "kind": "country_rule",
+        "label": "Singapore registry",
+        "message": "Verify through an SGNIC-accredited registrar."
+      }
+    ]
+  },
+  {
+    "tld": "com.sg",
+    "label": ".com.sg",
+    "category": "singapore",
+    "restricted": false,
+    "requiresEligibility": true,
+    "supportedProviders": ["mock", "manual"],
+    "defaultEnabled": true,
+    "quality": 86,
+    "rules": [
+      {
+        "kind": "country_rule",
+        "label": "Singapore commercial registry",
+        "message": ".com.sg may require local commercial entity eligibility validation."
+      }
+    ]
+  },
+  {
+    "tld": "net",
+    "label": ".net",
+    "category": "general",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 70
+  },
+  {
+    "tld": "io",
+    "label": ".io",
+    "category": "technology",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 82
+  },
+  {
+    "tld": "co",
+    "label": ".co",
+    "category": "general",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 76
+  },
+  {
+    "tld": "app",
+    "label": ".app",
+    "category": "technology",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 80
+  },
+  {
+    "tld": "dev",
+    "label": ".dev",
+    "category": "technology",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 78
+  },
+  {
+    "tld": "tech",
+    "label": ".tech",
+    "category": "technology",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 68
+  },
+  {
+    "tld": "education",
+    "label": ".education",
+    "category": "education",
+    "restricted": false,
+    "requiresEligibility": false,
+    "supportedProviders": ["mock", "rdap", "namecheap"],
+    "defaultEnabled": true,
+    "quality": 62
+  },
+  {
+    "tld": "edu",
+    "label": ".edu",
+    "category": "restricted",
+    "restricted": true,
+    "requiresEligibility": true,
+    "supportedProviders": ["manual"],
+    "defaultEnabled": true,
+    "quality": 55,
+    "rules": [
+      {
+        "kind": "restricted",
+        "label": ".edu eligibility",
+        "message": ".edu is restricted to eligible accredited postsecondary institutions."
+      }
+    ]
+  }
+]

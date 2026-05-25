@@ -6,6 +6,8 @@ import {
   readJson,
   validationError,
 } from "@/app/api/_lib/domain-api";
+import { parseDomainName } from "@/domain/normalize";
+import { recordPreferenceEvent } from "@/server/persistence/intelligence-store";
 
 type SavedProject = {
   id: string;
@@ -53,6 +55,20 @@ export async function POST(request: Request) {
     };
 
     projects.set(project.id, project);
+
+    void Promise.all(
+      domains.map((domain) => {
+        const parts = parseDomainName(domain);
+
+        return recordPreferenceEvent({
+          action: "saved",
+          domain: parts.domain || domain,
+          name: parts.sld || domain,
+          extension: parts.tld || "",
+          weight: 2,
+        });
+      }),
+    );
 
     return NextResponse.json(project, { status: 201 });
   } catch (error) {
