@@ -1,7 +1,9 @@
 import {
+  assessNameQuality,
   generateCommercialNameCandidates,
   rankCommercialNameCandidatesForExtension,
   scoreCommercialNameCandidate,
+  type NameQualityAssessment,
 } from "./name-quality";
 import { preferenceBoost, type PreferenceProfile } from "./preference-learning";
 import { normalizeBaseName } from "./normalize";
@@ -51,6 +53,7 @@ export type RecommendationCandidate = {
   score: number;
   method: string;
   intent: string;
+  quality: NameQualityAssessment;
 };
 
 export type RecommendationEngineDiagnostics = {
@@ -111,23 +114,6 @@ const MAX_RECOMMENDATION_BATCHES = 80;
 const AI_RECOMMENDATION_BATCH_DELAY_MS = 500;
 const REGISTRAR_SIGNAL_PROBE_BATCHES = 1;
 const NOISY_TERMS = new Set(["ops", "cloud", "grid", "works", "command", "control", "engine"]);
-const FAMOUS_AI_BRANDS = [
-  "openai",
-  "chatgpt",
-  "anthropic",
-  "claude",
-  "gemini",
-  "deepmind",
-  "perplexity",
-  "mistral",
-  "copilot",
-  "midjourney",
-  "huggingface",
-  "characterai",
-  "jasper",
-  "grok",
-];
-const VOWELS = new Set(["a", "e", "i", "o", "u"]);
 const STRONG_SUFFIXES = [
   "base",
   "hub",
@@ -281,24 +267,6 @@ function unique<T>(values: T[]) {
   return Array.from(new Set(values));
 }
 
-function countVowels(value: string) {
-  return [...value].filter((char) => VOWELS.has(char)).length;
-}
-
-function hasAwkwardRuns(value: string) {
-  return /(.)\1{2,}/.test(value) || /[bcdfghjklmnpqrstvwxyz]{5,}/.test(value);
-}
-
-function isHardToSay(value: string) {
-  const vowelRatio = value.length ? countVowels(value) / value.length : 0;
-
-  return vowelRatio < 0.18 || vowelRatio > 0.74 || hasAwkwardRuns(value);
-}
-
-function containsFamousBrand(value: string) {
-  return FAMOUS_AI_BRANDS.some((brand) => value === brand || value.includes(brand));
-}
-
 function hasNoisyTerm(name: string, seed: string) {
   return [...NOISY_TERMS].some((term) => name.includes(term) && !seed.includes(term));
 }
@@ -357,18 +325,19 @@ function addCandidate(
   constraints: RecommendationConstraints,
 ) {
   const name = compactName(value);
-  const maxLength = method === "brandable" ? 14 : 18;
   const maxWords = constraints.maxWords ?? 2;
+  const quality = assessNameQuality(seed, name, {
+    method,
+    intentRoots: intent.roots,
+    curatedNames: intent.curated,
+    maxMorphemes: maxWords,
+    allowFillerTerms: false,
+    mustIncludeSeed: constraints.mustIncludeSeed,
+  });
 
-  if (!name || name === seed) return;
-  if (name.length < 5 || name.length > maxLength) return;
-  if (containsFamousBrand(name)) return;
-  if (isHardToSay(name)) return;
-  if (hasNoisyTerm(name, seed)) return;
-  if (constraints.mustIncludeSeed && !name.includes(seed)) return;
-  if (commercialFragmentCount(name) > maxWords + 1) return;
+  if (!quality.accepted) return;
 
-  candidates.set(name, candidates.get(name) ?? { name, method, intent: intent.key });
+  candidates.set(name, candidates.get(name) ?? { name, method, intent: intent.key, quality });
 }
 
 function scoreEngineCandidate(
@@ -376,8 +345,22 @@ function scoreEngineCandidate(
   name: string,
   intent: SearchIntent,
   extension?: string,
+  method?: string,
 ) {
   const seed = compactName(seedName);
+  const quality = assessNameQuality(seedName, name, {
+    method,
+    extension,
+    intentRoots: intent.roots,
+    curatedNames: intent.curated,
+    maxMorphemes: 2,
+    allowFillerTerms: false,
+  });
+
+  if (!quality.accepted) {
+    return 0;
+  }
+
   const baseScore = scoreCommercialNameCandidate(seedName, name, extension);
   const brandScore = scoreName(name).brandScore;
   const length = name.length;
@@ -388,16 +371,21 @@ function scoreEngineCandidate(
   const relationBonus = curatedHit ? 18 : semanticHit ? 12 : seedHit ? 9 : 0;
   const complexityPenalty = Math.max(0, commercialFragmentCount(name) - 2) * 8;
   const noisePenalty = hasNoisyTerm(name, seed) ? 24 : 0;
+  const softFillerPenalty = quality.warnings.some((warning) => warning.startsWith("soft_filler"))
+    ? 10
+    : 0;
 
   return Math.max(
     0,
     Math.round(
-      baseScore * 0.5 +
-        brandScore * 0.36 +
+      quality.score * 0.68 +
+        baseScore * 0.12 +
+        brandScore * 0.14 +
         conciseBonus +
         relationBonus -
         complexityPenalty -
-        noisePenalty,
+        noisePenalty -
+        softFillerPenalty,
     ),
   );
 }
@@ -462,7 +450,7 @@ export function generateRecommendationCandidates({
   const ranked = Array.from(candidates.values())
     .map((candidate) => ({
       ...candidate,
-      score: scoreEngineCandidate(seedName, candidate.name, intent),
+      score: scoreEngineCandidate(seedName, candidate.name, intent, undefined, candidate.method),
     }))
     .sort((left, right) => {
       const scoreDelta = right.score - left.score;
@@ -487,22 +475,36 @@ export function rankRecommendationCandidatesForExtension(
   const candidateByName = new Map(candidates.map((candidate) => [candidate.name, candidate]));
   const intent = detectIntent(seedName);
 
-  return commercialRanked.sort((left, right) => {
-    const leftCandidate = candidateByName.get(left);
-    const rightCandidate = candidateByName.get(right);
-    const profile = preferenceProfile ?? EMPTY_PREFERENCE_PROFILE;
-    const leftRank =
-      scoreEngineCandidate(seedName, left, intent, extension) +
-      (leftCandidate?.score ?? 0) * 0.2 +
-      preferenceBoost(left, extension, profile);
-    const rightRank =
-      scoreEngineCandidate(seedName, right, intent, extension) +
-      (rightCandidate?.score ?? 0) * 0.2 +
-      preferenceBoost(right, extension, profile);
-    const scoreDelta = rightRank - leftRank;
+  return commercialRanked
+    .map((name) => {
+      const candidate = candidateByName.get(name);
+      const quality = assessNameQuality(seedName, name, {
+        method: candidate?.method,
+        extension,
+        intentRoots: intent.roots,
+        curatedNames: intent.curated,
+        maxMorphemes: 2,
+        allowFillerTerms: false,
+      });
 
-    return scoreDelta === 0 ? left.localeCompare(right) : scoreDelta;
-  });
+      return { name, candidate, quality };
+    })
+    .filter(({ quality }) => quality.accepted)
+    .sort((left, right) => {
+      const profile = preferenceProfile ?? EMPTY_PREFERENCE_PROFILE;
+      const leftRank =
+        scoreEngineCandidate(seedName, left.name, intent, extension, left.candidate?.method) +
+        (left.candidate?.score ?? 0) * 0.2 +
+        preferenceBoost(left.name, extension, profile);
+      const rightRank =
+        scoreEngineCandidate(seedName, right.name, intent, extension, right.candidate?.method) +
+        (right.candidate?.score ?? 0) * 0.2 +
+        preferenceBoost(right.name, extension, profile);
+      const scoreDelta = rightRank - leftRank;
+
+      return scoreDelta === 0 ? left.name.localeCompare(right.name) : scoreDelta;
+    })
+    .map(({ name }) => name);
 }
 
 export function isMockAvailabilityResult(result: DomainCheckResult) {

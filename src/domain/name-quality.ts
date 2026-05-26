@@ -123,6 +123,73 @@ const FAMOUS_AI_BRANDS = [
   "midjourney",
   "huggingface",
 ];
+const HARD_FILLER_TERMS = new Set([
+  "ops",
+  "cloud",
+  "grid",
+  "works",
+  "command",
+  "control",
+  "engine",
+  "hq",
+]);
+const SOFT_FILLER_TERMS = new Set(["base", "hub", "labs", "suite", "stack", "studio"]);
+const LOW_VALUE_ACTION_PREFIXES = new Set(["go", "try", "join", "use", "get"]);
+const OFFENSIVE_FRAGMENTS = ["fuck", "shit", "bitch", "cunt", "dick", "piss", "slut", "whore"];
+const QUALITY_FRAGMENTS = [
+  ...STRONG_SUFFIXES,
+  ...ACTION_PREFIXES,
+  "agent",
+  "operator",
+  "assistant",
+  "autopilot",
+  "workflow",
+  "task",
+  "action",
+  "data",
+  "metric",
+  "query",
+  "atlas",
+  "graph",
+  "stream",
+  "business",
+  "company",
+  "scale",
+  "trust",
+  "govern",
+  "venture",
+  "workforce",
+].sort((left, right) => right.length - left.length);
+
+export type NameQualityFamily =
+  | "curated"
+  | "semantic_compound"
+  | "keyword_compound"
+  | "verb_noun"
+  | "invented_brandable"
+  | "two_morpheme"
+  | "weak";
+
+export type NameQualityAssessmentOptions = {
+  extension?: string;
+  intentRoots?: string[];
+  curatedNames?: string[];
+  method?: string;
+  maxMorphemes?: number;
+  allowFillerTerms?: boolean;
+  mustIncludeSeed?: boolean;
+};
+
+export type NameQualityAssessment = {
+  name: string;
+  accepted: boolean;
+  score: number;
+  family: NameQualityFamily;
+  morphemeCount: number;
+  reasons: string[];
+  rejectionReasons: string[];
+  warnings: string[];
+};
 
 function compactName(value: string) {
   return normalizeBaseName(value).replace(/-/g, "");
@@ -154,6 +221,263 @@ function duplicateExtensionPenalty(name: string, extension?: string) {
 
 function containsFamousBrand(name: string) {
   return FAMOUS_AI_BRANDS.some((brand) => name === brand || name.includes(brand));
+}
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function containsFragment(name: string, fragment: string) {
+  if (fragment.length <= 3) {
+    return name === fragment || name.startsWith(fragment) || name.endsWith(fragment);
+  }
+
+  return name.includes(fragment);
+}
+
+function fragmentHits(name: string, fragments: Iterable<string>, seed = "") {
+  return Array.from(fragments).filter(
+    (fragment) => !seed.includes(fragment) && containsFragment(name, fragment),
+  );
+}
+
+function lowValueActionPrefix(name: string) {
+  for (const prefix of LOW_VALUE_ACTION_PREFIXES) {
+    if (!name.startsWith(prefix)) {
+      continue;
+    }
+
+    const rest = name.slice(prefix.length);
+
+    if (rest.length >= 4 && QUALITY_FRAGMENTS.some((fragment) => rest.startsWith(fragment))) {
+      return prefix;
+    }
+  }
+
+  return "";
+}
+
+function spansOverlap(
+  left: { start: number; end: number },
+  right: { start: number; end: number },
+) {
+  return left.start < right.end && right.start < left.end;
+}
+
+function matchingFragmentSpans(name: string, extraFragments: string[] = []) {
+  const fragments = Array.from(new Set([...extraFragments, ...QUALITY_FRAGMENTS]))
+    .filter((fragment) => fragment.length >= 3)
+    .sort((left, right) => right.length - left.length);
+  const spans: Array<{ fragment: string; start: number; end: number }> = [];
+
+  for (const fragment of fragments) {
+    let start = name.indexOf(fragment);
+
+    while (start >= 0) {
+      const span = { fragment, start, end: start + fragment.length };
+
+      if (!spans.some((existing) => spansOverlap(existing, span))) {
+        spans.push(span);
+      }
+
+      start = name.indexOf(fragment, start + 1);
+    }
+  }
+
+  return spans.sort((left, right) => left.start - right.start);
+}
+
+function estimateMorphemeCount(name: string, extraFragments: string[] = []) {
+  const spans = matchingFragmentSpans(name, extraFragments);
+
+  if (spans.length === 0) {
+    return name.length <= 8 ? 1 : 2;
+  }
+
+  return spans.length;
+}
+
+function hasRepeatedMeaningfulFragment(name: string, extraFragments: string[] = []) {
+  const fragments = Array.from(new Set([...extraFragments, ...QUALITY_FRAGMENTS]))
+    .filter((fragment) => fragment.length >= 4)
+    .sort((left, right) => right.length - left.length);
+
+  return fragments.some((fragment) => {
+    const first = name.indexOf(fragment);
+
+    return first >= 0 && name.indexOf(fragment, first + fragment.length) >= 0;
+  });
+}
+
+function qualityFamily({
+  name,
+  seed,
+  method,
+  morphemeCount,
+  intentRoots,
+  curatedNames,
+}: {
+  name: string;
+  seed: string;
+  method: string;
+  morphemeCount: number;
+  intentRoots: string[];
+  curatedNames: string[];
+}): NameQualityFamily {
+  if (curatedNames.includes(name)) return "curated";
+  if (method === "action" || ACTION_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+    return "verb_noun";
+  }
+  if (seed && name.includes(seed)) return "keyword_compound";
+  if (intentRoots.some((root) => root && name.includes(root))) return "semantic_compound";
+  if (method === "brandable" || morphemeCount <= 1) return "invented_brandable";
+  if (morphemeCount <= 2) return "two_morpheme";
+
+  return "weak";
+}
+
+export function assessNameQuality(
+  seedName: string,
+  candidateName: string,
+  options: NameQualityAssessmentOptions = {},
+): NameQualityAssessment {
+  const seed = compactName(seedName);
+  const name = compactName(candidateName);
+  const intentRoots = Array.from(
+    new Set([seed, ...(options.intentRoots ?? [])].map(compactName).filter(Boolean)),
+  );
+  const curatedNames = (options.curatedNames ?? []).map(compactName);
+  const method = options.method ?? "";
+  const maxMorphemes = options.maxMorphemes ?? 2;
+  const rejectionReasons: string[] = [];
+  const warnings: string[] = [];
+  const reasons: string[] = [];
+
+  if (!name) {
+    rejectionReasons.push("empty");
+  }
+
+  if (seed && name === seed) {
+    rejectionReasons.push("exact_seed");
+  }
+
+  if (name.length < 5) {
+    rejectionReasons.push("too_short");
+  }
+
+  if (name.length > 16) {
+    rejectionReasons.push("too_long");
+  } else if (name.length > 12) {
+    warnings.push("longer_than_premium_default");
+  }
+
+  if (containsFamousBrand(name)) {
+    rejectionReasons.push("famous_brand_conflict");
+  }
+
+  if (OFFENSIVE_FRAGMENTS.some((fragment) => name.includes(fragment))) {
+    rejectionReasons.push("offensive_fragment");
+  }
+
+  if (hasAwkwardRuns(name)) {
+    rejectionReasons.push("awkward_pronunciation");
+  }
+
+  if (options.mustIncludeSeed && seed && !name.includes(seed)) {
+    rejectionReasons.push("missing_required_seed");
+  }
+
+  const hardFillerHits = fragmentHits(name, HARD_FILLER_TERMS, seed);
+  const softFillerHits = fragmentHits(name, SOFT_FILLER_TERMS, seed);
+  const lowAction = lowValueActionPrefix(name);
+
+  if (!options.allowFillerTerms && hardFillerHits.length > 0) {
+    rejectionReasons.push(`overused_filler:${hardFillerHits.join(",")}`);
+  }
+
+  if (lowAction) {
+    rejectionReasons.push(`weak_action_prefix:${lowAction}`);
+  }
+
+  const morphemeCount = estimateMorphemeCount(name, intentRoots);
+
+  if (morphemeCount > maxMorphemes) {
+    rejectionReasons.push(`too_many_morphemes:${morphemeCount}`);
+  }
+
+  if (hasRepeatedMeaningfulFragment(name, intentRoots)) {
+    rejectionReasons.push("repeated_meaningful_fragment");
+  }
+
+  const family = qualityFamily({
+    name,
+    seed,
+    method,
+    morphemeCount,
+    intentRoots,
+    curatedNames,
+  });
+  const length = name.length;
+  const vowelRatio = length ? countVowels(name) / length : 0;
+  const hasSeed = Boolean(seed && name.includes(seed));
+  const semanticHit = intentRoots.some((root) => root !== seed && name.includes(root));
+  const curatedHit = curatedNames.includes(name);
+  const lengthScore =
+    length <= 10 ? 24 - Math.abs(length - 8) * 2.4 : 16 - Math.max(0, length - 10) * 4;
+  const pronunciationScore =
+    vowelRatio >= 0.24 && vowelRatio <= 0.62 ? 12 : vowelRatio >= 0.18 && vowelRatio <= 0.72 ? 5 : -10;
+  const relationScore = curatedHit ? 18 : semanticHit ? 13 : hasSeed ? 9 : 3;
+  const familyScore =
+    family === "curated"
+      ? 14
+      : family === "semantic_compound"
+        ? 11
+        : family === "invented_brandable"
+          ? 9
+          : family === "two_morpheme"
+            ? 8
+            : family === "keyword_compound"
+              ? 6
+              : family === "verb_noun"
+                ? 4
+                : -12;
+  const conciseBonus = length <= 9 ? 8 : length <= 12 ? 4 : -8;
+  const endingBonus = [...STRONG_ENDINGS].some((ending) => name.endsWith(ending)) ? 5 : 0;
+  const softFillerPenalty = softFillerHits.length * 14;
+  const hardFillerPenalty = hardFillerHits.length * 32;
+  const morphemePenalty = Math.max(0, morphemeCount - maxMorphemes) * 22;
+  const duplicateExtension = duplicateExtensionPenalty(name, options.extension);
+  const score = clampScore(
+    42 +
+      lengthScore +
+      pronunciationScore +
+      relationScore +
+      familyScore +
+      conciseBonus +
+      endingBonus -
+      softFillerPenalty -
+      hardFillerPenalty -
+      morphemePenalty -
+      duplicateExtension,
+  );
+
+  if (length <= 12) reasons.push("short");
+  if (semanticHit) reasons.push("semantic_match");
+  if (curatedHit) reasons.push("curated_pattern");
+  if (family === "invented_brandable") reasons.push("brandable_shape");
+  if (morphemeCount <= 2) reasons.push("two_morpheme");
+  if (softFillerHits.length > 0) warnings.push(`soft_filler:${softFillerHits.join(",")}`);
+
+  return {
+    name,
+    accepted: rejectionReasons.length === 0 && score >= 58,
+    score,
+    family,
+    morphemeCount,
+    reasons: Array.from(new Set(reasons)),
+    rejectionReasons: Array.from(new Set(rejectionReasons)),
+    warnings: Array.from(new Set(warnings)),
+  };
 }
 
 function addCandidate(candidates: Map<string, string>, name: string, origin: string) {
