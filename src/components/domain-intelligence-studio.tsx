@@ -42,6 +42,10 @@ import {
   transformName,
 } from "@/domain/generator";
 import {
+  assessNameQuality,
+  type NameQualityAssessment,
+} from "@/domain/name-quality";
+import {
   DEFAULT_RECOMMENDATION_QUOTAS,
   DEFAULT_RECOMMENDATION_TARGET,
   MAX_RECOMMENDATION_TARGET,
@@ -57,6 +61,8 @@ import {
   recommendationPlanSummary,
   sortRecommendationExtensions,
   type RecommendationPlan,
+  type RecommendationConstraints,
+  type NamingMode,
   type RecommendationTarget,
   type RecommendationTimeBudgetMinutes,
 } from "@/domain/recommendation-engine";
@@ -88,7 +94,10 @@ type SearchOutcome = {
   exactResults: DomainCheckResult[];
   alternativesReady: boolean;
   recommendationPlan: RecommendationPlan;
+  registrarAvailability: boolean;
+  relatedCandidateCount: number;
 };
+type RecommendationSearchPreset = "fast" | "balanced" | "deep" | "custom";
 
 const QUICK_EXTENSIONS = ["ai", "com", "tech", "sg", "com.sg", "io", "co", "app", "dev", "net", "education", "edu"];
 const INITIAL_EXTENSIONS = ["ai", "com", "sg", "com.sg", "io", "co", "app", "dev"];
@@ -96,6 +105,44 @@ const MODES: { value: ProviderMode; label: string }[] = [
   { value: "live", label: "Live" },
   { value: "hybrid", label: "Hybrid" },
   { value: "mock", label: "Mock" },
+];
+const RECOMMENDATION_SEARCH_PRESETS: Array<{
+  value: Exclude<RecommendationSearchPreset, "custom">;
+  label: string;
+  timeBudgetMinutes: RecommendationTimeBudgetMinutes;
+  namingMode: NamingMode;
+  allowSemanticAlternatives: boolean;
+  mustIncludeSeed: boolean;
+}> = [
+  {
+    value: "fast",
+    label: "Fast",
+    timeBudgetMinutes: 2,
+    namingMode: "balanced",
+    allowSemanticAlternatives: true,
+    mustIncludeSeed: false,
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    timeBudgetMinutes: 3,
+    namingMode: "balanced",
+    allowSemanticAlternatives: true,
+    mustIncludeSeed: false,
+  },
+  {
+    value: "deep",
+    label: "Deep",
+    timeBudgetMinutes: 5,
+    namingMode: "brandable",
+    allowSemanticAlternatives: true,
+    mustIncludeSeed: false,
+  },
+];
+const NAMING_MODE_OPTIONS: Array<{ value: NamingMode; label: string }> = [
+  { value: "balanced", label: "Balanced" },
+  { value: "brandable", label: "Brandable" },
+  { value: "keyword", label: "Keyword" },
 ];
 const NAV_ITEMS: { value: PageKey; label: string; icon: React.ElementType }[] = [
   { value: "search", label: "Search", icon: Search },
@@ -244,6 +291,22 @@ const SOURCE_LABELS: Record<DomainCheckResult["source"], string> = {
   mock: "Mock",
   manual: "Manual",
 };
+const QUALITY_FAMILY_LABELS: Record<NameQualityAssessment["family"], string> = {
+  curated: "Curated",
+  semantic_compound: "Semantic",
+  keyword_compound: "Keyword",
+  verb_noun: "Verb+noun",
+  invented_brandable: "Brandable",
+  two_morpheme: "Two-part",
+  weak: "Weak",
+};
+const QUALITY_REASON_LABELS: Record<string, string> = {
+  short: "Short",
+  semantic_match: "Semantic",
+  curated_pattern: "Curated",
+  brandable_shape: "Brandable",
+  two_morpheme: "Two-part",
+};
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -260,6 +323,28 @@ function downloadBlob(blob: Blob, filename: string) {
 
 function scoreForName(name: string, recommendations: Recommendation[]) {
   return recommendations.find((recommendation) => recommendation.name === name);
+}
+
+function qualityChipsForName(seedName: string | undefined, name: string) {
+  if (!seedName) {
+    return [];
+  }
+
+  const quality = assessNameQuality(seedName, name, {
+    maxMorphemes: 2,
+    allowFillerTerms: false,
+  });
+
+  if (!quality.accepted) {
+    return [];
+  }
+
+  return Array.from(
+    new Set([
+      QUALITY_FAMILY_LABELS[quality.family],
+      ...quality.reasons.map((reason) => QUALITY_REASON_LABELS[reason] ?? reason),
+    ]),
+  ).slice(0, 4);
 }
 
 function resultMatchesFilter(
@@ -508,6 +593,12 @@ export function DomainIntelligenceStudio() {
   const [recommendationQuotas, setRecommendationQuotas] = useState<Record<string, number>>(
     () => ({ ...DEFAULT_RECOMMENDATION_QUOTAS }),
   );
+  const [recommendationSearchPreset, setRecommendationSearchPreset] =
+    useState<RecommendationSearchPreset>("balanced");
+  const [recommendationNamingMode, setRecommendationNamingMode] =
+    useState<NamingMode>("balanced");
+  const [allowSemanticAlternatives, setAllowSemanticAlternatives] = useState(true);
+  const [relatedMustIncludeSeed, setRelatedMustIncludeSeed] = useState(false);
   const [recommendationTimeBudgetMinutes, setRecommendationTimeBudgetMinutes] =
     useState<RecommendationTimeBudgetMinutes>(3);
   const [customExtension, setCustomExtension] = useState("");
@@ -546,6 +637,14 @@ export function DomainIntelligenceStudio() {
   const recommendationPlan = useMemo(
     () => buildRecommendationPlan(extensions, recommendationQuotas),
     [extensions, recommendationQuotas],
+  );
+  const recommendationConstraints = useMemo<RecommendationConstraints>(
+    () => ({
+      maxWords: 2,
+      allowSemanticAlternatives,
+      mustIncludeSeed: relatedMustIncludeSeed,
+    }),
+    [allowSemanticAlternatives, relatedMustIncludeSeed],
   );
   const activeRecommendationPlan = searchOutcome?.recommendationPlan ?? recommendationPlan;
   const generationStyles = useMemo(
@@ -587,19 +686,56 @@ export function DomainIntelligenceStudio() {
       ),
     [activeRecommendationPlan, confirmedAvailableResults, recommendations, searchOutcome?.name],
   );
+  const exactResultDomains = useMemo(
+    () => new Set(searchOutcome?.exactResults.map((result) => result.domain) ?? []),
+    [searchOutcome?.exactResults],
+  );
+  const relatedCandidateRecommendations = useMemo(
+    () =>
+      searchOutcome
+        ? results.filter(
+            (result) =>
+              !exactResultDomains.has(result.domain) &&
+              !isRegistrarAvailable(result) &&
+              ["manual_check_required", "unknown", "rate_limited"].includes(result.status),
+          )
+        : [],
+    [exactResultDomains, results, searchOutcome],
+  );
   const topRecommendation = availableDomainRecommendations.length
     ? scoreForName(availableDomainRecommendations[0].name, recommendations)
+    : relatedCandidateRecommendations.length
+      ? scoreForName(relatedCandidateRecommendations[0].name, recommendations)
     : recommendations[0];
   const isRelatedAvailabilityMode = filter === "available" && Boolean(searchOutcome);
+  const isRelatedReviewMode =
+    filter === "manual" &&
+    Boolean(searchOutcome) &&
+    availableDomainRecommendations.length === 0 &&
+    relatedCandidateRecommendations.length > 0;
   const isFindingAvailableAlternatives =
-    isRelatedAvailabilityMode && Boolean(searchOutcome && !searchOutcome.alternativesReady);
+    Boolean(searchOutcome && !searchOutcome.alternativesReady) &&
+    (isRelatedAvailabilityMode || isRelatedReviewMode);
   const domainResultsTotalCount =
     isRelatedAvailabilityMode
       ? activeRecommendationPlan.target
+      : isRelatedReviewMode
+        ? relatedCandidateRecommendations.length
       : results.length;
   const visibleResults = useMemo(
-    () => (isRelatedAvailabilityMode ? availableDomainRecommendations : filteredResults),
-    [availableDomainRecommendations, filteredResults, isRelatedAvailabilityMode],
+    () =>
+      isRelatedAvailabilityMode
+        ? availableDomainRecommendations
+        : isRelatedReviewMode
+          ? relatedCandidateRecommendations
+          : filteredResults,
+    [
+      availableDomainRecommendations,
+      filteredResults,
+      isRelatedAvailabilityMode,
+      isRelatedReviewMode,
+      relatedCandidateRecommendations,
+    ],
   );
   const transformed = useMemo(() => transformName(query), [query]);
   const exportRows = useMemo(
@@ -649,6 +785,40 @@ export function DomainIntelligenceStudio() {
     setRecommendationQuotas(buildBalancedRecommendationQuotas(extensions, target));
   }
 
+  function applyRecommendationSearchPreset(
+    preset: Exclude<RecommendationSearchPreset, "custom">,
+  ) {
+    const config = RECOMMENDATION_SEARCH_PRESETS.find((item) => item.value === preset);
+
+    if (!config) return;
+
+    setRecommendationSearchPreset(config.value);
+    setRecommendationTimeBudgetMinutes(config.timeBudgetMinutes);
+    setRecommendationNamingMode(config.namingMode);
+    setAllowSemanticAlternatives(config.allowSemanticAlternatives);
+    setRelatedMustIncludeSeed(config.mustIncludeSeed);
+  }
+
+  function updateRecommendationTimeBudget(value: RecommendationTimeBudgetMinutes) {
+    setRecommendationSearchPreset("custom");
+    setRecommendationTimeBudgetMinutes(value);
+  }
+
+  function updateRecommendationNamingMode(value: NamingMode) {
+    setRecommendationSearchPreset("custom");
+    setRecommendationNamingMode(value);
+  }
+
+  function updateAllowSemanticAlternatives(value: boolean) {
+    setRecommendationSearchPreset("custom");
+    setAllowSemanticAlternatives(value);
+  }
+
+  function updateRelatedMustIncludeSeed(value: boolean) {
+    setRecommendationSearchPreset("custom");
+    setRelatedMustIncludeSeed(value);
+  }
+
   function toggleGenerationStyle(style: GenerationStyle) {
     setSelectedStyles((current) => {
       const next = new Set(current);
@@ -689,6 +859,8 @@ export function DomainIntelligenceStudio() {
     const normalizedNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
     const searchRecommendationPlan = recommendationPlan;
     const searchTimeBudgetMs = recommendationTimeBudgetMinutes * 60_000;
+    const searchNamingMode = recommendationNamingMode;
+    const searchConstraints = recommendationConstraints;
 
     if (normalizedNames.length === 0 || extensions.length === 0) {
       setError("Add at least one valid name and extension.");
@@ -739,7 +911,6 @@ export function DomainIntelligenceStudio() {
         nextPage === "results" && mode !== "mock" && normalizedNames.length === 1;
       const shouldFindAvailableAlternatives =
         shouldTrackSearchOutcome &&
-        canConfirmRegistrarAvailability &&
         availableResultCount < searchRecommendationPlan.target;
 
       setResults(payload.results);
@@ -751,10 +922,12 @@ export function DomainIntelligenceStudio() {
               exactResults: payload.results,
               alternativesReady: !shouldFindAvailableAlternatives,
               recommendationPlan: searchRecommendationPlan,
+              registrarAvailability: canConfirmRegistrarAvailability,
+              relatedCandidateCount: 0,
             }
           : null,
       );
-      setFilter(!canConfirmRegistrarAvailability && availableResultCount === 0 ? "all" : "available");
+      setFilter(!canConfirmRegistrarAvailability && availableResultCount === 0 ? "manual" : "available");
       setActivePage(nextPage);
       setProgress(100);
       setStatusText("Results ready");
@@ -770,6 +943,8 @@ export function DomainIntelligenceStudio() {
           nextRecommendations,
           searchRecommendationPlan,
           searchTimeBudgetMs,
+          searchNamingMode,
+          searchConstraints,
         );
       } else {
         scheduleProgressReset();
@@ -793,6 +968,8 @@ export function DomainIntelligenceStudio() {
     baseRecommendations: Recommendation[],
     searchRecommendationPlan: RecommendationPlan,
     searchTimeBudgetMs: number,
+    searchNamingMode: NamingMode,
+    searchConstraints: RecommendationConstraints,
   ) {
     if (searchRunRef.current !== runId) {
       return;
@@ -809,19 +986,26 @@ export function DomainIntelligenceStudio() {
         baseRecommendations,
         searchRecommendationPlan,
         searchTimeBudgetMs,
+        searchNamingMode,
+        searchConstraints,
       );
 
       if (searchRunRef.current !== runId) {
         return;
       }
 
-      if (alternatives.results.length > 0) {
+      const fallbackCandidates =
+        alternatives.results.length === 0 ? alternatives.checkedResults : [];
+      const nextAlternativeResults =
+        alternatives.results.length > 0 ? alternatives.results : fallbackCandidates;
+
+      if (nextAlternativeResults.length > 0) {
         setResults((current) => {
           const existingDomains = new Set(current.map((result) => result.domain));
 
           return [
             ...current,
-            ...alternatives.results.filter((result) => !existingDomains.has(result.domain)),
+            ...nextAlternativeResults.filter((result) => !existingDomains.has(result.domain)),
           ];
         });
         setRecommendations((current) => {
@@ -832,22 +1016,32 @@ export function DomainIntelligenceStudio() {
             ...alternatives.recommendations.filter((item) => !existingNames.has(item.name)),
           ].slice(0, Math.max(40, searchRecommendationPlan.target * 2));
         });
-        setFilter("available");
-        void enrichLiveIntelligence(
-          runId,
-          alternatives.results.slice(0, searchRecommendationPlan.target),
-          alternatives.recommendations,
-          searchRecommendationPlan.target,
-        );
+        setFilter(alternatives.results.length > 0 ? "available" : "manual");
+        if (alternatives.results.length > 0) {
+          void enrichLiveIntelligence(
+            runId,
+            alternatives.results.slice(0, searchRecommendationPlan.target),
+            alternatives.recommendations,
+            searchRecommendationPlan.target,
+          );
+        }
         setSearchOutcome((current) =>
           current?.name === normalizedNames[0]
-            ? { ...current, alternativesReady: true }
+            ? {
+                ...current,
+                alternativesReady: true,
+                relatedCandidateCount: fallbackCandidates.length,
+              }
             : current,
         );
-        setStatusText("Available recommendations updated");
+        setStatusText(
+          alternatives.results.length > 0
+            ? "Available recommendations updated"
+            : "Related candidates ready",
+        );
       } else {
         if (baseResults.filter(isRegistrarAvailable).length === 0) {
-          setFilter("all");
+          setFilter("manual");
         }
         setSearchOutcome((current) =>
           current?.name === normalizedNames[0]
@@ -879,13 +1073,15 @@ export function DomainIntelligenceStudio() {
     existingRecommendations: Recommendation[],
     searchRecommendationPlan: RecommendationPlan,
     searchTimeBudgetMs: number,
+    searchNamingMode: NamingMode,
+    searchConstraints: RecommendationConstraints,
   ) {
     if (
       seedNames.length !== 1 ||
       existingResults.filter(isRegistrarAvailable).length >= searchRecommendationPlan.target ||
       extensions.length === 0
     ) {
-      return { results: [], recommendations: [] };
+      return { results: [], checkedResults: [], recommendations: [] };
     }
 
     return findAvailableDomainRecommendations({
@@ -896,12 +1092,8 @@ export function DomainIntelligenceStudio() {
       existingResults,
       existingRecommendations,
       checkAvailability: checkAlternativeBatch,
-      namingMode: "balanced",
-      constraints: {
-        maxWords: 2,
-        allowSemanticAlternatives: true,
-        mustIncludeSeed: false,
-      },
+      namingMode: searchNamingMode,
+      constraints: searchConstraints,
       preferenceProfile: learnPreferenceProfile(
         Array.from(saved.values()).map((item) => ({
           name: item.domain,
@@ -1239,8 +1431,16 @@ export function DomainIntelligenceStudio() {
                 recommendationQuotas={recommendationQuotas}
                 setRecommendationQuota={setRecommendationQuota}
                 applyRecommendationPreset={applyRecommendationPreset}
+                recommendationSearchPreset={recommendationSearchPreset}
+                applyRecommendationSearchPreset={applyRecommendationSearchPreset}
+                recommendationNamingMode={recommendationNamingMode}
+                setRecommendationNamingMode={updateRecommendationNamingMode}
+                allowSemanticAlternatives={allowSemanticAlternatives}
+                setAllowSemanticAlternatives={updateAllowSemanticAlternatives}
+                relatedMustIncludeSeed={relatedMustIncludeSeed}
+                setRelatedMustIncludeSeed={updateRelatedMustIncludeSeed}
                 recommendationTimeBudgetMinutes={recommendationTimeBudgetMinutes}
-                setRecommendationTimeBudgetMinutes={setRecommendationTimeBudgetMinutes}
+                setRecommendationTimeBudgetMinutes={updateRecommendationTimeBudget}
                 selectedStyles={selectedStyles}
                 toggleGenerationStyle={toggleGenerationStyle}
                 isChecking={isChecking}
@@ -1264,6 +1464,7 @@ export function DomainIntelligenceStudio() {
                 <SearchOutcomeNotice
                   outcome={searchOutcome}
                   relatedAvailableCount={availableDomainRecommendations.length}
+                  relatedCandidateCount={relatedCandidateRecommendations.length}
                   onShowExact={() => setFilter("all")}
                 />
                 <DashboardToolbar
@@ -1276,6 +1477,7 @@ export function DomainIntelligenceStudio() {
                   }
                   totalCount={domainResultsTotalCount}
                   isRelatedAvailabilityMode={isRelatedAvailabilityMode}
+                  isRelatedReviewMode={isRelatedReviewMode}
                   isFindingAlternatives={isFindingAvailableAlternatives}
                   recommendationTarget={activeRecommendationPlan.target}
                   exportMenu={
@@ -1296,18 +1498,29 @@ export function DomainIntelligenceStudio() {
                   onSave={saveResult}
                   onShowAll={() => setFilter("all")}
                   isRelatedAvailabilityMode={isRelatedAvailabilityMode}
+                  isRelatedReviewMode={isRelatedReviewMode}
                   isFindingAlternatives={isFindingAvailableAlternatives}
                   recommendationTarget={activeRecommendationPlan.target}
+                  qualitySeedName={searchOutcome?.name}
                 />
               </section>
 
               <aside className="flex min-w-0 flex-col gap-5">
                 <BrandScoreGauge recommendation={topRecommendation} results={results} />
                 <RecommendationPanel
-                  availableDomains={availableDomainRecommendations}
+                  availableDomains={
+                    availableDomainRecommendations.length
+                      ? availableDomainRecommendations
+                      : relatedCandidateRecommendations
+                  }
                   recommendations={recommendations}
+                  isCandidateFallbackMode={
+                    availableDomainRecommendations.length === 0 &&
+                    relatedCandidateRecommendations.length > 0
+                  }
                   isFindingAlternatives={isFindingAvailableAlternatives}
                   recommendationTarget={activeRecommendationPlan.target}
+                  qualitySeedName={searchOutcome?.name}
                   onCheck={(names) => checkNames(names)}
                 />
                 <ExtensionMatrix groups={groupedByName} extensions={extensions} />
@@ -1486,6 +1699,14 @@ function HomeSearch({
   recommendationQuotas,
   setRecommendationQuota,
   applyRecommendationPreset,
+  recommendationSearchPreset,
+  applyRecommendationSearchPreset,
+  recommendationNamingMode,
+  setRecommendationNamingMode,
+  allowSemanticAlternatives,
+  setAllowSemanticAlternatives,
+  relatedMustIncludeSeed,
+  setRelatedMustIncludeSeed,
   recommendationTimeBudgetMinutes,
   setRecommendationTimeBudgetMinutes,
   selectedStyles,
@@ -1505,6 +1726,14 @@ function HomeSearch({
   recommendationQuotas: Record<string, number>;
   setRecommendationQuota: (extension: string, value: number) => void;
   applyRecommendationPreset: (target: RecommendationTarget) => void;
+  recommendationSearchPreset: RecommendationSearchPreset;
+  applyRecommendationSearchPreset: (preset: Exclude<RecommendationSearchPreset, "custom">) => void;
+  recommendationNamingMode: NamingMode;
+  setRecommendationNamingMode: (value: NamingMode) => void;
+  allowSemanticAlternatives: boolean;
+  setAllowSemanticAlternatives: (value: boolean) => void;
+  relatedMustIncludeSeed: boolean;
+  setRelatedMustIncludeSeed: (value: boolean) => void;
   recommendationTimeBudgetMinutes: RecommendationTimeBudgetMinutes;
   setRecommendationTimeBudgetMinutes: (value: RecommendationTimeBudgetMinutes) => void;
   selectedStyles: Set<GenerationStyle>;
@@ -1584,6 +1813,14 @@ function HomeSearch({
         recommendationQuotas={recommendationQuotas}
         setRecommendationQuota={setRecommendationQuota}
         applyRecommendationPreset={applyRecommendationPreset}
+        recommendationSearchPreset={recommendationSearchPreset}
+        applyRecommendationSearchPreset={applyRecommendationSearchPreset}
+        recommendationNamingMode={recommendationNamingMode}
+        setRecommendationNamingMode={setRecommendationNamingMode}
+        allowSemanticAlternatives={allowSemanticAlternatives}
+        setAllowSemanticAlternatives={setAllowSemanticAlternatives}
+        relatedMustIncludeSeed={relatedMustIncludeSeed}
+        setRelatedMustIncludeSeed={setRelatedMustIncludeSeed}
         recommendationTimeBudgetMinutes={recommendationTimeBudgetMinutes}
         setRecommendationTimeBudgetMinutes={setRecommendationTimeBudgetMinutes}
       />
@@ -1619,6 +1856,14 @@ function RecommendationPlanner({
   recommendationQuotas,
   setRecommendationQuota,
   applyRecommendationPreset,
+  recommendationSearchPreset,
+  applyRecommendationSearchPreset,
+  recommendationNamingMode,
+  setRecommendationNamingMode,
+  allowSemanticAlternatives,
+  setAllowSemanticAlternatives,
+  relatedMustIncludeSeed,
+  setRelatedMustIncludeSeed,
   recommendationTimeBudgetMinutes,
   setRecommendationTimeBudgetMinutes,
 }: {
@@ -1627,6 +1872,14 @@ function RecommendationPlanner({
   recommendationQuotas: Record<string, number>;
   setRecommendationQuota: (extension: string, value: number) => void;
   applyRecommendationPreset: (target: RecommendationTarget) => void;
+  recommendationSearchPreset: RecommendationSearchPreset;
+  applyRecommendationSearchPreset: (preset: Exclude<RecommendationSearchPreset, "custom">) => void;
+  recommendationNamingMode: NamingMode;
+  setRecommendationNamingMode: (value: NamingMode) => void;
+  allowSemanticAlternatives: boolean;
+  setAllowSemanticAlternatives: (value: boolean) => void;
+  relatedMustIncludeSeed: boolean;
+  setRelatedMustIncludeSeed: (value: boolean) => void;
   recommendationTimeBudgetMinutes: RecommendationTimeBudgetMinutes;
   setRecommendationTimeBudgetMinutes: (value: RecommendationTimeBudgetMinutes) => void;
 }) {
@@ -1661,6 +1914,27 @@ function RecommendationPlanner({
               )}
             >
               Top {target}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-zinc-500">Search depth</span>
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Search depth preset">
+          {RECOMMENDATION_SEARCH_PRESETS.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              onClick={() => applyRecommendationSearchPreset(preset.value)}
+              className={cn(
+                "inline-flex h-8 items-center justify-center rounded-lg border px-2.5 text-xs font-bold transition",
+                recommendationSearchPreset === preset.value
+                  ? "border-emerald-200/45 bg-emerald-200/13 text-emerald-100"
+                  : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white",
+              )}
+            >
+              {preset.label}
             </button>
           ))}
         </div>
@@ -1705,6 +1979,48 @@ function RecommendationPlanner({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-zinc-500">Naming mode</span>
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Naming mode">
+          {NAMING_MODE_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setRecommendationNamingMode(option.value)}
+              className={cn(
+                "inline-flex h-8 items-center justify-center rounded-lg border px-2.5 text-xs font-bold transition",
+                recommendationNamingMode === option.value
+                  ? "border-cyan-200/45 bg-cyan-200/13 text-cyan-100"
+                  : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <label className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-bold text-zinc-200">
+          <input
+            type="checkbox"
+            checked={allowSemanticAlternatives}
+            onChange={(event) => setAllowSemanticAlternatives(event.target.checked)}
+            className="h-3.5 w-3.5 accent-cyan-300"
+          />
+          Semantic
+        </label>
+        <label className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-bold text-zinc-200">
+          <input
+            type="checkbox"
+            checked={relatedMustIncludeSeed}
+            onChange={(event) => setRelatedMustIncludeSeed(event.target.checked)}
+            className="h-3.5 w-3.5 accent-cyan-300"
+          />
+          Include seed
+        </label>
       </div>
     </div>
   );
@@ -1778,10 +2094,12 @@ function ModeSafetyNotice({
 function SearchOutcomeNotice({
   outcome,
   relatedAvailableCount,
+  relatedCandidateCount,
   onShowExact,
 }: {
   outcome: SearchOutcome | null;
   relatedAvailableCount: number;
+  relatedCandidateCount: number;
   onShowExact: () => void;
 }) {
   if (!outcome) {
@@ -1794,9 +2112,12 @@ function SearchOutcomeNotice({
   const target = outcome.recommendationPlan.target;
   const splitSummary = recommendationPlanSummary(outcome.recommendationPlan);
   const hasRelatedAvailable = relatedAvailableCount > 0;
+  const hasRelatedCandidates = relatedCandidateCount > 0;
   const readyCopy = hasRelatedAvailable
     ? `Below are the top ${relatedAvailableCount} registrar-confirmed related domains, targeting ${splitSummary}.`
-    : "No registrar-confirmed related domains were found with the current provider setup. Review the checked results or configure a registrar API for stronger live availability.";
+    : hasRelatedCandidates && !outcome.registrarAvailability
+      ? `Registrar API credentials are not configured, so confirmed availability cannot be claimed. Showing ${relatedCandidateCount} high-quality related candidates needing registrar confirmation, targeting ${splitSummary}.`
+      : "No registrar-confirmed related domains were found with the current provider setup. Review the checked results or configure a registrar API for stronger live availability.";
   const findingCopy = `Exact lookup completed first. Finding top ${target} related available domains, split ${splitSummary}.`;
 
   return (
@@ -1879,7 +2200,9 @@ function SearchOutcomeNotice({
         )}
         {outcome.alternativesReady && relatedAvailableCount === 0 && (
           <span className="rounded-full border border-amber-200/25 bg-amber-200/10 px-2.5 py-1 text-amber-100">
-            0 registrar-confirmed related domains
+            {hasRelatedCandidates && !outcome.registrarAvailability
+              ? `${relatedCandidateCount} related candidates need registrar check`
+              : "0 registrar-confirmed related domains"}
           </span>
         )}
       </div>
@@ -1948,6 +2271,7 @@ function DashboardToolbar({
   availableCount,
   totalCount,
   isRelatedAvailabilityMode = false,
+  isRelatedReviewMode = false,
   isFindingAlternatives = false,
   recommendationTarget = DEFAULT_RECOMMENDATION_TARGET,
   exportMenu,
@@ -1957,6 +2281,7 @@ function DashboardToolbar({
   availableCount: number;
   totalCount: number;
   isRelatedAvailabilityMode?: boolean;
+  isRelatedReviewMode?: boolean;
   isFindingAlternatives?: boolean;
   recommendationTarget?: number;
   exportMenu: React.ReactNode;
@@ -2003,6 +2328,8 @@ function DashboardToolbar({
       <div className="text-xs font-semibold text-zinc-500">
         {isFindingAlternatives
           ? `Finding top ${recommendationTarget}`
+          : isRelatedReviewMode
+            ? `${totalCount} need registrar check`
           : filter === "available"
           ? `${availableCount} confirmed available`
           : `${totalCount} checked`}
@@ -2096,8 +2423,10 @@ function DomainResultsPanel({
   onSave,
   onShowAll,
   isRelatedAvailabilityMode = false,
+  isRelatedReviewMode = false,
   isFindingAlternatives = false,
   recommendationTarget = DEFAULT_RECOMMENDATION_TARGET,
+  qualitySeedName,
 }: {
   results: DomainCheckResult[];
   totalCount: number;
@@ -2106,8 +2435,10 @@ function DomainResultsPanel({
   onSave: (result: DomainCheckResult) => void;
   onShowAll: () => void;
   isRelatedAvailabilityMode?: boolean;
+  isRelatedReviewMode?: boolean;
   isFindingAlternatives?: boolean;
   recommendationTarget?: number;
+  qualitySeedName?: string;
 }) {
   return (
     <GlassCard className="overflow-hidden">
@@ -2117,7 +2448,11 @@ function DomainResultsPanel({
             Domain Stack
           </p>
           <h2 className="mt-1 text-lg font-semibold">
-            {filter === "available" ? "Confirmed available domains" : "Checked extensions"}
+            {isRelatedReviewMode
+              ? "Related domains to verify"
+              : filter === "available"
+                ? "Confirmed available domains"
+                : "Checked extensions"}
           </h2>
         </div>
         <div className="rounded-full border border-white/10 bg-white/[0.045] px-3 py-1 text-xs font-bold text-zinc-300">
@@ -2141,6 +2476,8 @@ function DomainResultsPanel({
           <h3 className="mt-4 text-lg font-semibold text-white">
             {isFindingAlternatives
               ? `Finding top ${recommendationTarget} available related domains`
+              : isRelatedReviewMode
+                ? "Related domains need registrar confirmation"
               : filter === "available"
               ? "No confirmed available domains in this run"
               : "No domains match this filter"}
@@ -2148,6 +2485,8 @@ function DomainResultsPanel({
           <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-400">
             {isFindingAlternatives
               ? "Checking commercial, semantic, and preference-aware alternatives across high-value extensions."
+              : isRelatedReviewMode
+                ? "These candidates match the search intent and selected extension split, but need a registrar API or checkout lookup before availability can be claimed."
               : "Available-only shows registrar-confirmed results and excludes mock simulations, taken names, and manual checks."}
           </p>
           {!isFindingAlternatives && (
@@ -2162,6 +2501,7 @@ function DomainResultsPanel({
             const evidence = evidenceSummary(result);
             const price = priceLabel(result);
             const intelligence = result.intelligence;
+            const qualityChips = qualityChipsForName(qualitySeedName, result.name);
 
             return (
               <div
@@ -2192,6 +2532,14 @@ function DomainResultsPanel({
                         {price}
                       </span>
                     )}
+                    {qualityChips.map((chip) => (
+                      <span
+                        key={`${result.domain}-${chip}`}
+                        className="rounded-full border border-fuchsia-200/20 bg-fuchsia-200/8 px-2.5 py-1 text-xs font-bold text-fuchsia-100"
+                      >
+                        {chip}
+                      </span>
+                    ))}
                     {intelligence && (
                       <>
                         <span
@@ -2351,14 +2699,18 @@ function BrandScoreGauge({
 function RecommendationPanel({
   availableDomains,
   recommendations,
+  isCandidateFallbackMode = false,
   isFindingAlternatives = false,
   recommendationTarget = DEFAULT_RECOMMENDATION_TARGET,
+  qualitySeedName,
   onCheck,
 }: {
   availableDomains: DomainCheckResult[];
   recommendations: Recommendation[];
+  isCandidateFallbackMode?: boolean;
   isFindingAlternatives?: boolean;
   recommendationTarget?: number;
+  qualitySeedName?: string;
   onCheck: (names: string[]) => void;
 }) {
   const recommendationByName = new Map(
@@ -2375,7 +2727,9 @@ function RecommendationPanel({
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-100/70">
             Recommendations
           </p>
-          <h2 className="mt-1 text-xl font-semibold">Available recommendations</h2>
+          <h2 className="mt-1 text-xl font-semibold">
+            {isCandidateFallbackMode ? "Related candidates" : "Available recommendations"}
+          </h2>
         </div>
         <IconButton
           label="Check top recommendations"
@@ -2396,7 +2750,9 @@ function RecommendationPanel({
           <div className="rounded-2xl border border-white/[0.07] bg-black/20 p-4 text-sm text-zinc-400">
             {isFindingAlternatives
               ? `Finding top ${recommendationTarget} available commercial-value recommendations.`
-              : "No variants have passed live availability checks yet. Try different roots or configure a registrar API for stronger confirmation."}
+              : isCandidateFallbackMode
+                ? "These names are ranked for commercial quality and extension fit, but still need registrar confirmation."
+                : "No variants have passed live availability checks yet. Try different roots or configure a registrar API for stronger confirmation."}
           </div>
         ) : (
           availableDomains.slice(0, recommendationTarget).map((result, index) => (
@@ -2405,6 +2761,7 @@ function RecommendationPanel({
               result={result}
               recommendation={recommendationByName.get(result.name)}
               rank={index + 1}
+              qualitySeedName={qualitySeedName}
               onCheck={() => onCheck([result.name])}
             />
           ))
@@ -2418,14 +2775,17 @@ function RecommendationCard({
   result,
   recommendation,
   rank,
+  qualitySeedName,
   onCheck,
 }: {
   result: DomainCheckResult;
   recommendation?: Recommendation;
   rank: number;
+  qualitySeedName?: string;
   onCheck: () => void;
 }) {
   const intelligence = result.intelligence;
+  const qualityChips = qualityChipsForName(qualitySeedName, result.name);
   const reasonText = intelligence?.reasons.length
     ? intelligence.reasons.slice(0, 4).join(" | ")
     : recommendation?.explanation ?? evidenceSummary(result);
@@ -2471,6 +2831,14 @@ function RecommendationCard({
             </span>
           </>
         )}
+        {qualityChips.slice(0, 3).map((chip) => (
+          <span
+            key={`${result.domain}-${chip}`}
+            className="rounded-full border border-fuchsia-200/20 bg-fuchsia-200/8 px-2.5 py-1 text-xs font-bold text-fuchsia-100"
+          >
+            {chip}
+          </span>
+        ))}
       </div>
       <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-400">
         {reasonText}

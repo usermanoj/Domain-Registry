@@ -6,7 +6,8 @@ import {
   type NameQualityAssessment,
 } from "./name-quality";
 import { preferenceBoost, type PreferenceProfile } from "./preference-learning";
-import { normalizeBaseName } from "./normalize";
+import { composeDomain, normalizeBaseName } from "./normalize";
+import { buildAvailabilityResult } from "./providers/provider-utils";
 import { rankRecommendations, scoreName } from "./scoring";
 import { getExtensionQuality } from "./tlds";
 import type {
@@ -68,6 +69,7 @@ export type RecommendationEngineDiagnostics = {
 
 export type RecommendationEngineResponse = {
   results: DomainCheckResult[];
+  checkedResults: DomainCheckResult[];
   recommendations: Recommendation[];
   checkedCount: number;
   elapsedMs: number;
@@ -166,6 +168,33 @@ const COMMERCIAL_FRAGMENTS = [
   "trust",
   "govern",
   "venture",
+  "sales",
+  "revenue",
+  "pipeline",
+  "deal",
+  "seller",
+  "customer",
+  "developer",
+  "code",
+  "deploy",
+  "api",
+  "ship",
+  "strait",
+  "ledger",
+  "finance",
+  "account",
+  "audit",
+  "local",
+  "security",
+  "secure",
+  "risk",
+  "guard",
+  "shield",
+  "cyber",
+  "process",
+  "loop",
+  "automate",
+  "orchestrate",
 ];
 const EMPTY_PREFERENCE_PROFILE: PreferenceProfile = {
   preferredFragments: {},
@@ -177,6 +206,7 @@ const EMPTY_PREFERENCE_PROFILE: PreferenceProfile = {
 
 type SearchIntent = {
   key: string;
+  matchTerms?: string[];
   confidence: number;
   roots: string[];
   curated: string[];
@@ -248,6 +278,106 @@ const INTENT_PROFILES: Record<string, SearchIntent> = {
     nouns: ["suite", "base", "forge", "pilot", "stack", "hub", "signal"],
     actions: ["scale", "secure", "trust", "build", "govern"],
   },
+  sales: {
+    key: "sales",
+    matchTerms: ["crm", "revenue", "pipeline", "gtm"],
+    confidence: 0.86,
+    roots: ["sales", "revenue", "pipeline", "deal", "seller", "customer", "growth"],
+    curated: [
+      "salespilot",
+      "revenueforge",
+      "dealpilot",
+      "pipelineflow",
+      "sellerforge",
+      "customerlens",
+      "growthpilot",
+      "revenuevault",
+      "salessignal",
+      "dealsignal",
+    ],
+    nouns: ["pilot", "forge", "signal", "flow", "lens", "vault"],
+    actions: ["scale", "grow", "find", "trust", "build"],
+  },
+  developer: {
+    key: "developer",
+    matchTerms: ["dev", "code", "api", "deploy", "platform"],
+    confidence: 0.84,
+    roots: ["developer", "code", "build", "deploy", "api", "ship", "platform"],
+    curated: [
+      "codepilot",
+      "codeforge",
+      "apipilot",
+      "apiforge",
+      "deploypilot",
+      "shipforge",
+      "buildpilot",
+      "platformpilot",
+      "codevault",
+      "devsignal",
+    ],
+    nouns: ["pilot", "forge", "signal", "vault", "flow", "lens"],
+    actions: ["ship", "build", "deploy", "map", "secure"],
+  },
+  singapore: {
+    key: "singapore",
+    matchTerms: ["sg", "accounting", "accountant", "audit", "finance", "local"],
+    confidence: 0.84,
+    roots: ["strait", "ledger", "finance", "account", "audit", "trust", "local"],
+    curated: [
+      "straitledger",
+      "trustledger",
+      "accountforge",
+      "auditpilot",
+      "ledgerflow",
+      "financeforge",
+      "localtrust",
+      "auditflow",
+      "ledgerpilot",
+      "straittrust",
+    ],
+    nouns: ["ledger", "trust", "pilot", "forge", "signal", "axis"],
+    actions: ["audit", "trust", "scale", "build", "map"],
+  },
+  workflow: {
+    key: "workflow",
+    matchTerms: ["automation", "automate", "process", "orchestration"],
+    confidence: 0.86,
+    roots: ["workflow", "process", "flow", "task", "loop", "automate", "orchestrate"],
+    curated: [
+      "workflowpilot",
+      "flowpilot",
+      "taskflow",
+      "processpilot",
+      "loopforge",
+      "automateflow",
+      "workflowforge",
+      "taskpilot",
+      "processforge",
+      "loopvault",
+    ],
+    nouns: ["pilot", "flow", "forge", "loop", "signal", "desk"],
+    actions: ["run", "ship", "build", "map", "sync"],
+  },
+  security: {
+    key: "security",
+    matchTerms: ["cyber", "cybersecurity", "secure", "risk", "audit", "shield"],
+    confidence: 0.86,
+    roots: ["security", "secure", "risk", "guard", "trust", "shield", "audit", "cyber"],
+    curated: [
+      "securitypilot",
+      "secureforge",
+      "riskpilot",
+      "trustguard",
+      "auditforge",
+      "cyberpilot",
+      "shieldflow",
+      "riskvault",
+      "guardpilot",
+      "securevault",
+    ],
+    nouns: ["guard", "pilot", "forge", "signal", "vault", "shield"],
+    actions: ["secure", "trust", "audit", "shield", "verify"],
+  },
 };
 
 const GENERIC_INTENT: SearchIntent = {
@@ -301,7 +431,23 @@ function detectIntent(seedName: string): SearchIntent {
     return direct;
   }
 
-  const partial = Object.values(INTENT_PROFILES).find((profile) => seed.includes(profile.key));
+  const partial = Object.values(INTENT_PROFILES)
+    .map((profile) => {
+      const match = [profile.key, ...(profile.matchTerms ?? [])]
+        .map(compactName)
+        .filter((term) => term.length > 0 && seed.includes(term))
+        .sort((left, right) => right.length - left.length)[0];
+
+      return { profile, match };
+    })
+    .filter((item): item is { profile: SearchIntent; match: string } => Boolean(item.match))
+    .sort((left, right) => {
+      const lengthDelta = right.match.length - left.match.length;
+
+      return lengthDelta === 0
+        ? right.profile.confidence - left.profile.confidence
+        : lengthDelta;
+    })[0]?.profile;
 
   if (partial) {
     return {
@@ -628,6 +774,94 @@ export function prioritizeAvailableDomainResults(
   return selected;
 }
 
+function isReviewCandidate(result: DomainCheckResult) {
+  return (
+    !isRegistrarAvailable(result) &&
+    ["manual_check_required", "unknown", "rate_limited"].includes(result.status)
+  );
+}
+
+function rankReviewDomainResults(
+  results: DomainCheckResult[],
+  recommendations: Recommendation[],
+  preferredName?: string,
+) {
+  const scoreByName = new Map(
+    recommendations.map((recommendation) => [
+      recommendation.name,
+      recommendation.brandScore,
+    ]),
+  );
+
+  return [...results]
+    .filter(isReviewCandidate)
+    .sort((left, right) => {
+      const seed = preferredName ?? "";
+      const statusWeight = (result: DomainCheckResult) =>
+        result.status === "manual_check_required"
+          ? 12
+          : result.status === "unknown"
+            ? 4
+            : 0;
+      const leftRank =
+        (scoreByName.get(left.name) ?? 0) +
+        scoreCommercialNameCandidate(seed, left.name, left.extension) * 0.28 +
+        getExtensionQuality(left.extension) * 0.34 +
+        commercialExtensionBoost(left.extension) +
+        statusWeight(left);
+      const rightRank =
+        (scoreByName.get(right.name) ?? 0) +
+        scoreCommercialNameCandidate(seed, right.name, right.extension) * 0.28 +
+        getExtensionQuality(right.extension) * 0.34 +
+        commercialExtensionBoost(right.extension) +
+        statusWeight(right);
+      const scoreDelta = rightRank - leftRank;
+
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      return getExtensionQuality(right.extension) - getExtensionQuality(left.extension);
+    });
+}
+
+export function prioritizeReviewDomainResults(
+  results: DomainCheckResult[],
+  recommendations: Recommendation[],
+  recommendationPlan: RecommendationPlan,
+  preferredName?: string,
+) {
+  const ranked = rankReviewDomainResults(results, recommendations, preferredName);
+  const byExtension = (extension: string) =>
+    ranked.filter((result) => result.extension.toLowerCase() === extension);
+  const selected: DomainCheckResult[] = [];
+  const selectedDomains = new Set<string>();
+
+  function pushResults(nextResults: DomainCheckResult[], cap = recommendationPlan.target) {
+    for (const result of nextResults) {
+      if (
+        selected.length >= recommendationPlan.target ||
+        selectedDomains.has(result.domain) ||
+        cap <= 0
+      ) {
+        continue;
+      }
+
+      selected.push(result);
+      selectedDomains.add(result.domain);
+      cap -= 1;
+    }
+  }
+
+  for (const { extension, quota } of recommendationPlan.quotas) {
+    pushResults(byExtension(extension), quota);
+  }
+
+  pushResults(ranked);
+
+  return selected;
+}
+
 function availabilityCountsByExtension(results: DomainCheckResult[]) {
   return results.filter(isRegistrarAvailable).reduce(
     (counts, result) => {
@@ -779,6 +1013,25 @@ function mergeRecommendations(
   return Array.from(byName.values());
 }
 
+function buildRegistrarReviewCandidateResult(
+  name: string,
+  extension: string,
+): DomainCheckResult {
+  const domain = composeDomain(name, extension);
+
+  return buildAvailabilityResult({
+    domain,
+    status: "manual_check_required",
+    confidence: "medium",
+    source: "manual",
+    providerName: "RecommendationQualityEngine",
+    premium: false,
+    rawSummary:
+      "High-quality related candidate. Configure a registrar API or open the registrar checkout before claiming availability.",
+    errorCode: "REGISTRAR_CONFIRMATION_REQUIRED",
+  });
+}
+
 async function checkRecommendationExtensionBatches({
   seedName,
   candidates,
@@ -838,6 +1091,31 @@ async function checkRecommendationExtensionBatches({
       !hasRegistrarSignal &&
       index + 1 >= REGISTRAR_SIGNAL_PROBE_BATCHES
     ) {
+      const normalizedExtension = extension.toLowerCase();
+      const reviewCount = results.filter(
+        (result) =>
+          result.extension.toLowerCase() === normalizedExtension &&
+          isReviewCandidate(result),
+      ).length;
+      const needed = Math.max(0, quota - reviewCount);
+
+      if (needed > 0) {
+        const seenDomains = new Set(
+          results.map((result) => result.domain.toLowerCase()),
+        );
+        const fallbackResults = rankedNames
+          .map((name) => buildRegistrarReviewCandidateResult(name, extension))
+          .filter((result) => !seenDomains.has(result.domain.toLowerCase()))
+          .slice(0, needed);
+
+        results = [...results, ...fallbackResults];
+        recommendations = mergeRecommendations(
+          recommendations,
+          fallbackResults.map((result) => scoreName(result.name, [result])),
+        );
+        checkedCount += fallbackResults.length;
+      }
+
       break;
     }
 
@@ -894,6 +1172,7 @@ export async function findAvailableDomainRecommendations({
 
     return {
       results: [],
+      checkedResults: [],
       recommendations: [],
       checkedCount: 0,
       elapsedMs,
@@ -939,8 +1218,15 @@ export async function findAvailableDomainRecommendations({
     recommendationPlan,
     seedName,
   );
+  const checkedResults = prioritizeReviewDomainResults(
+    alternativeResults,
+    alternativeRecommendations,
+    recommendationPlan,
+    seedName,
+  );
 
   const availableNames = new Set(available.map((result) => result.name));
+  const checkedNames = new Set(checkedResults.map((result) => result.name));
   const recommendationByName = new Map(
     alternativeRecommendations.map((recommendation) => [
       recommendation.name,
@@ -954,7 +1240,7 @@ export async function findAvailableDomainRecommendations({
     ]),
   );
   const recommendations = rankRecommendations(
-    Array.from(availableNames)
+    Array.from(availableNames.size > 0 ? availableNames : checkedNames)
       .map((name) => recommendationByName.get(name) ?? seedRecommendationByName.get(name))
       .filter((recommendation): recommendation is Recommendation => Boolean(recommendation)),
   );
@@ -962,6 +1248,7 @@ export async function findAvailableDomainRecommendations({
 
   return {
     results: available,
+    checkedResults,
     recommendations,
     checkedCount,
     elapsedMs,

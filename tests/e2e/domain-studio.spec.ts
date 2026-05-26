@@ -23,7 +23,7 @@ async function showAllResults(page: import("@playwright/test").Page) {
 function fakeResult(
   name: string,
   extension: string,
-  status: "available_confirmed" | "taken_confirmed" = "taken_confirmed",
+  status: "available_confirmed" | "taken_confirmed" | "manual_check_required" = "taken_confirmed",
 ) {
   const domain = `${name}.${extension}`;
 
@@ -32,8 +32,13 @@ function fakeResult(
     sld: name,
     tld: extension,
     status,
-    confidence: "high",
-    source: status === "available_confirmed" ? "registrar_api" : "dns",
+    confidence: status === "manual_check_required" ? "medium" : "high",
+    source:
+      status === "available_confirmed"
+        ? "registrar_api"
+        : status === "manual_check_required"
+          ? "manual"
+          : "dns",
     providerName: "PlaywrightProvider",
     checkedAt: new Date().toISOString(),
     premium: false,
@@ -265,7 +270,11 @@ test("live search supplements partial exact availability with top related domain
   expect(visibleDomains).toHaveLength(20);
   expect(visibleDomains.slice(0, 10).every((domain) => domain.endsWith(".ai"))).toBe(true);
   expect(visibleDomains.slice(10, 20).every((domain) => domain.endsWith(".com"))).toBe(true);
-  expect(alternativeNames.some((name) => /data|signal|graph|metric|query|vault|atlas|stream|insight/.test(name))).toBe(true);
+  expect(
+    alternativeNames.some((name) =>
+      /enterprise|business|scale|trust|venture|company|govern|data|signal|graph|metric|query|vault|atlas|stream|insight/.test(name),
+    ),
+  ).toBe(true);
   expect(alternativeNames.every((name) => !/(ops|cloud|grid|works)/.test(name))).toBe(true);
   expect(alternativeExtensionRequests).toContain("ai");
   expect(alternativeExtensionRequests).toContain("com");
@@ -292,9 +301,19 @@ test("live search falls back to checked results when no registrar availability i
         checkedAt: new Date().toISOString(),
         mode: body.mode ?? "live",
         results: names.flatMap((name) =>
-          extensions.map((extension) => fakeResult(name, extension, "taken_confirmed")),
+          extensions.map((extension) =>
+            fakeResult(
+              name,
+              extension,
+              calls === 1 ? "taken_confirmed" : "manual_check_required",
+            ),
+          ),
         ),
         recommendations: names.map((name) => fakeRecommendation(name, 76)),
+        capabilities: {
+          registrarAvailability: false,
+          configuredRegistrarProviders: [],
+        },
       }),
     });
   });
@@ -310,12 +329,21 @@ test("live search falls back to checked results when no registrar availability i
   await page.getByRole("button", { name: "Search", exact: true }).nth(1).click();
 
   await expect(page.getByText('No registrar-confirmed availability for "agent"')).toBeVisible();
-  await expect(page.getByText("No registrar-confirmed related domains were found")).toBeVisible({
+  await expect(page.getByText("related candidates need registrar check")).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByText("Checked extensions")).toBeVisible();
-  await expect(page.getByText("agent.ai").first()).toBeVisible();
-  await expect(page.getByText("0 registrar-confirmed related domains")).toBeVisible();
+  await expect(page.getByText("Related domains to verify")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Related candidates" })).toBeVisible();
+  const visibleDomains = await page.locator("div.font-mono.text-lg").allTextContents();
+  expect(visibleDomains).toHaveLength(20);
+  expect(visibleDomains.slice(0, 10).every((domain) => domain.endsWith(".ai"))).toBe(true);
+  expect(visibleDomains.slice(10, 20).every((domain) => domain.endsWith(".com"))).toBe(true);
+  expect(
+    visibleDomains.some((domain) =>
+      /agent|operator|assistant|autopilot|task|action/.test(domain),
+    ),
+  ).toBe(true);
+  expect(visibleDomains.every((domain) => !/(ops|cloud|grid|works)/.test(domain))).toBe(true);
   expect(calls).toBeGreaterThan(1);
 });
 

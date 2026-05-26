@@ -29,9 +29,14 @@ function fakeResult(
     tld: extension,
     extension,
     status,
-    confidence: "high",
+    confidence: status === "manual_check_required" ? "medium" : "high",
     providerName: "TestAvailabilityProvider",
-    source: "registrar_api",
+    source:
+      status === "available_confirmed"
+        ? "registrar_api"
+        : status === "manual_check_required"
+          ? "manual"
+          : "dns",
     checkedAt: new Date("2026-05-25T00:00:00Z").toISOString(),
     premium: false,
     rules: [],
@@ -153,6 +158,63 @@ describe("domain recommendation engine", () => {
     }
   });
 
+  it("handles practical commercial intents beyond single-word seeds", () => {
+    const goldenSeeds = [
+      {
+        seedName: "AI sales CRM",
+        intent: "sales",
+        relatedPattern: /sales|revenue|pipeline|deal|seller|customer|growth/,
+      },
+      {
+        seedName: "developer platform",
+        intent: "developer",
+        relatedPattern: /developer|code|build|deploy|api|ship|platform|dev/,
+      },
+      {
+        seedName: "SG accounting firm",
+        intent: "singapore",
+        relatedPattern: /strait|ledger|finance|account|audit|trust|local|axis/,
+      },
+      {
+        seedName: "workflow automation",
+        intent: "workflow",
+        relatedPattern: /workflow|process|flow|task|loop|automate|orchestrate/,
+      },
+      {
+        seedName: "cybersecurity agent",
+        intent: "security",
+        relatedPattern: /security|secure|risk|guard|trust|shield|audit|cyber/,
+      },
+    ];
+
+    for (const { seedName, intent, relatedPattern } of goldenSeeds) {
+      const { candidates } = generateRecommendationCandidates({
+        seedName,
+        limit: 60,
+        constraints: {
+          maxWords: 2,
+          allowSemanticAlternatives: true,
+          mustIncludeSeed: false,
+        },
+      });
+      const topCandidates = candidates.slice(0, 20);
+      const topNames = topCandidates.map((candidate) => candidate.name);
+      const quality = topCandidates.map((candidate) =>
+        assessNameQuality(seedName, candidate.name, {
+          method: candidate.method,
+          maxMorphemes: 2,
+          allowFillerTerms: false,
+        }),
+      );
+
+      expect(topCandidates.every((candidate) => candidate.intent === intent)).toBe(true);
+      expect(topNames.filter((name) => relatedPattern.test(name)).length).toBeGreaterThanOrEqual(14);
+      expect(topNames.every((name) => !/(ops|cloud|grid|works|hq)/.test(name))).toBe(true);
+      expect(quality.every((item) => item.accepted)).toBe(true);
+      expect(quality.every((item) => item.morphemeCount <= 2)).toBe(true);
+    }
+  });
+
   it("checks ranked candidates by extension quota and returns the requested split", async () => {
     const plan = buildRecommendationPlan(["ai", "com"], {
       ai: 2,
@@ -199,6 +261,64 @@ describe("domain recommendation engine", () => {
     expect(calls.map((call) => call.extensions)).toEqual([["ai"], ["com"]]);
     expect(response.diagnostics.candidateCount).toBeGreaterThan(20);
     expect(response.checkedCount).toBeGreaterThanOrEqual(4);
+  });
+
+  it("fills the default related review split when registrar availability is not configured", async () => {
+    const plan = buildRecommendationPlan(["ai", "com"], {
+      ai: 10,
+      com: 10,
+    });
+    const calls: Array<{ names: string[]; extensions: string[] }> = [];
+    const checkAvailability = async (
+      names: string[],
+      extensions: string[],
+    ): Promise<DomainCheckResponse> => {
+      calls.push({ names, extensions });
+
+      const results = names.flatMap((name, index) =>
+        extensions.map((extension) =>
+          fakeResult(
+            name,
+            extension,
+            index < 2 ? "manual_check_required" : "taken_confirmed",
+          ),
+        ),
+      );
+
+      return {
+        checkedAt: new Date("2026-05-25T00:00:00Z").toISOString(),
+        mode: "live",
+        capabilities: {
+          registrarAvailability: false,
+          configuredRegistrarProviders: [],
+        },
+        results,
+        recommendations: recommendationsFor(results),
+      };
+    };
+
+    const response = await findAvailableDomainRecommendations({
+      seedName: "agent",
+      selectedExtensions: ["ai", "com"],
+      recommendationPlan: plan,
+      timeBudgetMs: 30_000,
+      existingResults: [],
+      existingRecommendations: [],
+      checkAvailability,
+    });
+
+    const counts = response.checkedResults.reduce<Record<string, number>>((acc, result) => {
+      acc[result.extension] = (acc[result.extension] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    expect(response.results).toHaveLength(0);
+    expect(response.checkedResults).toHaveLength(20);
+    expect(counts).toEqual({ ai: 10, com: 10 });
+    expect(response.checkedResults.every((result) => result.status === "manual_check_required")).toBe(true);
+    expect(response.checkedResults.every((result) => result.source !== "registrar_api")).toBe(true);
+    expect(response.checkedResults.every((result) => !/(ops|cloud|grid|works)/.test(result.name))).toBe(true);
+    expect(calls.map((call) => call.extensions)).toEqual([["ai"], ["com"]]);
   });
 
   it("preserves the requested quota extensions instead of filling with fallback TLDs", async () => {
