@@ -708,19 +708,20 @@ export function DomainIntelligenceStudio() {
       ? scoreForName(relatedCandidateRecommendations[0].name, recommendations)
     : recommendations[0];
   const isRelatedAvailabilityMode = filter === "available" && Boolean(searchOutcome);
+  const isFindingRelatedRecommendations = Boolean(searchOutcome && !searchOutcome.alternativesReady);
   const isRelatedReviewMode =
     filter === "manual" &&
     Boolean(searchOutcome) &&
     availableDomainRecommendations.length === 0 &&
-    relatedCandidateRecommendations.length > 0;
-  const isFindingAvailableAlternatives =
-    Boolean(searchOutcome && !searchOutcome.alternativesReady) &&
-    (isRelatedAvailabilityMode || isRelatedReviewMode);
+    (relatedCandidateRecommendations.length > 0 || isFindingRelatedRecommendations);
+  const isFindingAvailableAlternatives = isFindingRelatedRecommendations;
   const domainResultsTotalCount =
     isRelatedAvailabilityMode
       ? activeRecommendationPlan.target
       : isRelatedReviewMode
-        ? relatedCandidateRecommendations.length
+        ? isFindingRelatedRecommendations
+          ? activeRecommendationPlan.target
+          : relatedCandidateRecommendations.length
       : results.length;
   const visibleResults = useMemo(
     () =>
@@ -929,13 +930,16 @@ export function DomainIntelligenceStudio() {
       );
       setFilter(!canConfirmRegistrarAvailability && availableResultCount === 0 ? "manual" : "available");
       setActivePage(nextPage);
-      setProgress(100);
-      setStatusText("Results ready");
-      setIsChecking(false);
 
       if (
         shouldFindAvailableAlternatives
       ) {
+        setProgress(82);
+        setStatusText(
+          canConfirmRegistrarAvailability
+            ? "Finding available alternatives"
+            : "Screening related candidates",
+        );
         void appendAvailableAlternatives(
           runId,
           normalizedNames,
@@ -947,6 +951,9 @@ export function DomainIntelligenceStudio() {
           searchConstraints,
         );
       } else {
+        setProgress(100);
+        setStatusText("Results ready");
+        setIsChecking(false);
         scheduleProgressReset();
       }
     } catch (checkError) {
@@ -976,7 +983,11 @@ export function DomainIntelligenceStudio() {
     }
 
     setProgress(86);
-    setStatusText("Finding available alternatives");
+    setStatusText(
+      baseResults.some(isRegistrarAvailable)
+        ? "Finding available alternatives"
+        : "Screening related candidates",
+    );
 
     try {
       const alternatives = await findAvailableAlternatives(
@@ -1052,6 +1063,7 @@ export function DomainIntelligenceStudio() {
       }
 
       setProgress(100);
+      setIsChecking(false);
     } catch {
       if (searchRunRef.current !== runId) {
         return;
@@ -1059,6 +1071,7 @@ export function DomainIntelligenceStudio() {
 
       setProgress(100);
       setStatusText("Results ready");
+      setIsChecking(false);
     } finally {
       if (searchRunRef.current === runId) {
         scheduleProgressReset();
@@ -1393,7 +1406,11 @@ export function DomainIntelligenceStudio() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-3">
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="flex items-center gap-3"
+                  >
                     <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
                       <motion.div
                         className="h-full rounded-full bg-gradient-to-r from-cyan-200 via-emerald-200 to-amber-200"
@@ -1515,8 +1532,9 @@ export function DomainIntelligenceStudio() {
                   }
                   recommendations={recommendations}
                   isCandidateFallbackMode={
+                    Boolean(searchOutcome && !searchOutcome.registrarAvailability) &&
                     availableDomainRecommendations.length === 0 &&
-                    relatedCandidateRecommendations.length > 0
+                    (relatedCandidateRecommendations.length > 0 || isFindingAvailableAlternatives)
                   }
                   isFindingAlternatives={isFindingAvailableAlternatives}
                   recommendationTarget={activeRecommendationPlan.target}
@@ -1777,8 +1795,12 @@ function HomeSearch({
             </div>
           )}
           <PrimaryButton onClick={onSearch} disabled={isChecking} className="lg:min-w-44">
-            <Search className="h-5 w-5" />
-            Search
+            {isChecking ? (
+              <RefreshCw className="h-5 w-5 animate-spin" />
+            ) : (
+              <Search className="h-5 w-5" />
+            )}
+            {isChecking ? "Searching" : "Search"}
           </PrimaryButton>
         </div>
       </div>
@@ -2113,12 +2135,15 @@ function SearchOutcomeNotice({
   const splitSummary = recommendationPlanSummary(outcome.recommendationPlan);
   const hasRelatedAvailable = relatedAvailableCount > 0;
   const hasRelatedCandidates = relatedCandidateCount > 0;
+  const isFindingRelated = !outcome.alternativesReady;
   const readyCopy = hasRelatedAvailable
     ? `Below are the top ${relatedAvailableCount} registrar-confirmed related domains, targeting ${splitSummary}.`
     : hasRelatedCandidates && !outcome.registrarAvailability
       ? `Registrar API credentials are not configured, so confirmed availability cannot be claimed. Showing ${relatedCandidateCount} high-quality related candidates needing registrar confirmation, targeting ${splitSummary}.`
       : "No registrar-confirmed related domains were found with the current provider setup. Review the checked results or configure a registrar API for stronger live availability.";
-  const findingCopy = `Exact lookup completed first. Finding top ${target} related available domains, split ${splitSummary}.`;
+  const findingCopy = outcome.registrarAvailability
+    ? `Exact lookup completed first. Finding top ${target} related available domains, split ${splitSummary}.`
+    : `Exact lookup completed first. Screening top ${target} related candidates across ${splitSummary}.`;
 
   return (
     <div
@@ -2196,6 +2221,14 @@ function SearchOutcomeNotice({
         {relatedAvailableCount > 0 && (
           <span className="rounded-full border border-emerald-200/25 bg-emerald-200/10 px-2.5 py-1 text-emerald-100">
             {relatedAvailableCount} of {target} related available
+          </span>
+        )}
+        {isFindingRelated && (
+          <span className="inline-flex items-center gap-2 rounded-full border border-cyan-200/25 bg-cyan-200/10 px-2.5 py-1 text-cyan-100">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            {outcome.registrarAvailability
+              ? `Finding top ${target} related available domains`
+              : `Screening top ${target} related candidates`}
           </span>
         )}
         {outcome.alternativesReady && relatedAvailableCount === 0 && (
@@ -2325,9 +2358,19 @@ function DashboardToolbar({
           </button>
         ))}
       </div>
-      <div className="text-xs font-semibold text-zinc-500">
+      <div
+        role={isFindingAlternatives ? "status" : undefined}
+        aria-live={isFindingAlternatives ? "polite" : undefined}
+        className={cn(
+          "inline-flex items-center gap-2 text-xs font-semibold",
+          isFindingAlternatives ? "text-cyan-100" : "text-zinc-500",
+        )}
+      >
+        {isFindingAlternatives && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
         {isFindingAlternatives
-          ? `Finding top ${recommendationTarget}`
+          ? isRelatedReviewMode
+            ? `Screening top ${recommendationTarget}`
+            : `Finding top ${recommendationTarget}`
           : isRelatedReviewMode
             ? `${totalCount} need registrar check`
           : filter === "available"
@@ -2448,7 +2491,9 @@ function DomainResultsPanel({
             Domain Stack
           </p>
           <h2 className="mt-1 text-lg font-semibold">
-            {isRelatedReviewMode
+            {isFindingAlternatives && isRelatedReviewMode
+              ? "Screening related candidates"
+              : isRelatedReviewMode
               ? "Related domains to verify"
               : filter === "available"
                 ? "Confirmed available domains"
@@ -2456,10 +2501,10 @@ function DomainResultsPanel({
           </h2>
         </div>
         <div className="rounded-full border border-white/10 bg-white/[0.045] px-3 py-1 text-xs font-bold text-zinc-300">
-          {isRelatedAvailabilityMode && results.length === 0
-            ? isFindingAlternatives
-              ? `Finding top ${recommendationTarget}`
-              : "0 confirmed"
+          {isFindingAlternatives && results.length === 0
+            ? `Screening top ${recommendationTarget}`
+            : isRelatedAvailabilityMode && results.length === 0
+              ? "0 confirmed"
             : `${results.length} of ${totalCount}`}
         </div>
       </div>
@@ -2475,7 +2520,9 @@ function DomainResultsPanel({
           </div>
           <h3 className="mt-4 text-lg font-semibold text-white">
             {isFindingAlternatives
-              ? `Finding top ${recommendationTarget} available related domains`
+              ? isRelatedReviewMode
+                ? `Screening top ${recommendationTarget} related candidates`
+                : `Finding top ${recommendationTarget} available related domains`
               : isRelatedReviewMode
                 ? "Related domains need registrar confirmation"
               : filter === "available"
@@ -2484,7 +2531,7 @@ function DomainResultsPanel({
           </h3>
           <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-400">
             {isFindingAlternatives
-              ? "Checking commercial, semantic, and preference-aware alternatives across high-value extensions."
+              ? "Checking ranked names against registry signals and excluding known registered domains before showing the shortlist."
               : isRelatedReviewMode
                 ? "These candidates match the search intent and selected extension split, but need a registrar API or checkout lookup before availability can be claimed."
               : "Available-only shows registrar-confirmed results and excludes mock simulations, taken names, and manual checks."}
@@ -2749,7 +2796,9 @@ function RecommendationPanel({
         {availableDomains.length === 0 ? (
           <div className="rounded-2xl border border-white/[0.07] bg-black/20 p-4 text-sm text-zinc-400">
             {isFindingAlternatives
-              ? `Finding top ${recommendationTarget} available commercial-value recommendations.`
+              ? isCandidateFallbackMode
+                ? `Screening top ${recommendationTarget} related candidates before display.`
+                : `Finding top ${recommendationTarget} available commercial-value recommendations.`
               : isCandidateFallbackMode
                 ? "These names are ranked for commercial quality and extension fit, but still need registrar confirmation."
                 : "No variants have passed live availability checks yet. Try different roots or configure a registrar API for stronger confirmation."}

@@ -160,8 +160,7 @@ test("live search shows the exact lookup before keyword-anchored alternatives fi
   await page.getByRole("button", { name: "Search", exact: true }).nth(1).click();
 
   await expect(page.getByText('No registrar-confirmed availability for "enterprise"')).toBeVisible();
-  await expect(page.getByText("Finding top 20 related available domains")).toBeVisible();
-  await expect(page.getByText("Finding available alternatives")).toBeVisible();
+  await expect(page.getByText("Finding top 20 related available domains", { exact: true })).toBeVisible();
   await expect(page.getByText("0 of 20 related available", { exact: true })).not.toBeVisible();
   await expect(page.getByText("Available recommendations")).toBeVisible();
   await expect(page.getByText("Below are the top 20 registrar-confirmed related domains")).toBeVisible();
@@ -301,6 +300,10 @@ test("live search falls back to checked results when no registrar availability i
         : (alternativeBatchesByExtension[alternativeExtension] =
             (alternativeBatchesByExtension[alternativeExtension] ?? 0) + 1);
 
+    if (calls > 1) {
+      await new Promise((resolve) => setTimeout(resolve, 160));
+    }
+
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -338,6 +341,8 @@ test("live search falls back to checked results when no registrar availability i
   await page.getByRole("button", { name: "Search", exact: true }).nth(1).click();
 
   await expect(page.getByText('No registrar-confirmed availability for "agent"')).toBeVisible();
+  await expect(page.getByText("Screening top 20 related candidates").first()).toBeVisible();
+  await expect(page.getByText("Screening related candidates").first()).toBeVisible();
   await expect(page.getByText("related candidates need registrar check")).toBeVisible({
     timeout: 20_000,
   });
