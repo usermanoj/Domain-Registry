@@ -283,6 +283,7 @@ test("live search supplements partial exact availability with top related domain
 
 test("live search falls back to checked results when no registrar availability is confirmed", async ({ page }) => {
   let calls = 0;
+  const alternativeBatchesByExtension: Record<string, number> = {};
 
   await page.route("**/api/domain/check", async (route) => {
     calls += 1;
@@ -293,6 +294,12 @@ test("live search falls back to checked results when no registrar availability i
     };
     const names = body.names?.length ? body.names : ["agent"];
     const extensions = body.extensions?.length ? body.extensions : ["ai"];
+    const alternativeExtension = extensions[0] ?? "ai";
+    const alternativeBatch =
+      calls === 1
+        ? 0
+        : (alternativeBatchesByExtension[alternativeExtension] =
+            (alternativeBatchesByExtension[alternativeExtension] ?? 0) + 1);
 
     await route.fulfill({
       status: 200,
@@ -300,12 +307,14 @@ test("live search falls back to checked results when no registrar availability i
       body: JSON.stringify({
         checkedAt: new Date().toISOString(),
         mode: body.mode ?? "live",
-        results: names.flatMap((name) =>
+        results: names.flatMap((name, index) =>
           extensions.map((extension) =>
             fakeResult(
               name,
               extension,
-              calls === 1 ? "taken_confirmed" : "manual_check_required",
+              calls === 1 || index >= 2 || alternativeBatch === 0
+                ? "taken_confirmed"
+                : "manual_check_required",
             ),
           ),
         ),
@@ -344,7 +353,9 @@ test("live search falls back to checked results when no registrar availability i
     ),
   ).toBe(true);
   expect(visibleDomains.every((domain) => !/(ops|cloud|grid|works)/.test(domain))).toBe(true);
-  expect(calls).toBeGreaterThan(1);
+  expect(alternativeBatchesByExtension.ai).toBeGreaterThanOrEqual(5);
+  expect(alternativeBatchesByExtension.com).toBeGreaterThanOrEqual(5);
+  expect(calls).toBeGreaterThanOrEqual(11);
 });
 
 test("recommendation split can be customized across selected extensions", async ({ page }) => {

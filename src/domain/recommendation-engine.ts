@@ -6,8 +6,7 @@ import {
   type NameQualityAssessment,
 } from "./name-quality";
 import { preferenceBoost, type PreferenceProfile } from "./preference-learning";
-import { composeDomain, normalizeBaseName } from "./normalize";
-import { buildAvailabilityResult } from "./providers/provider-utils";
+import { normalizeBaseName } from "./normalize";
 import { rankRecommendations, scoreName } from "./scoring";
 import { getExtensionQuality } from "./tlds";
 import type {
@@ -1013,25 +1012,6 @@ function mergeRecommendations(
   return Array.from(byName.values());
 }
 
-function buildRegistrarReviewCandidateResult(
-  name: string,
-  extension: string,
-): DomainCheckResult {
-  const domain = composeDomain(name, extension);
-
-  return buildAvailabilityResult({
-    domain,
-    status: "manual_check_required",
-    confidence: "medium",
-    source: "manual",
-    providerName: "RecommendationQualityEngine",
-    premium: false,
-    rawSummary:
-      "High-quality related candidate. Configure a registrar API or open the registrar checkout before claiming availability.",
-    errorCode: "REGISTRAR_CONFIRMATION_REQUIRED",
-  });
-}
-
 async function checkRecommendationExtensionBatches({
   seedName,
   candidates,
@@ -1097,26 +1077,10 @@ async function checkRecommendationExtensionBatches({
           result.extension.toLowerCase() === normalizedExtension &&
           isReviewCandidate(result),
       ).length;
-      const needed = Math.max(0, quota - reviewCount);
 
-      if (needed > 0) {
-        const seenDomains = new Set(
-          results.map((result) => result.domain.toLowerCase()),
-        );
-        const fallbackResults = rankedNames
-          .map((name) => buildRegistrarReviewCandidateResult(name, extension))
-          .filter((result) => !seenDomains.has(result.domain.toLowerCase()))
-          .slice(0, needed);
-
-        results = [...results, ...fallbackResults];
-        recommendations = mergeRecommendations(
-          recommendations,
-          fallbackResults.map((result) => scoreName(result.name, [result])),
-        );
-        checkedCount += fallbackResults.length;
+      if (reviewCount >= quota) {
+        break;
       }
-
-      break;
     }
 
     if ((availabilityCountsByExtension(results)[extension.toLowerCase()] ?? 0) >= quota) {

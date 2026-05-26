@@ -317,8 +317,14 @@ describe("domain recommendation engine", () => {
     expect(counts).toEqual({ ai: 10, com: 10 });
     expect(response.checkedResults.every((result) => result.status === "manual_check_required")).toBe(true);
     expect(response.checkedResults.every((result) => result.source !== "registrar_api")).toBe(true);
+    expect(
+      response.checkedResults.every(
+        (result) => result.providerName === "TestAvailabilityProvider",
+      ),
+    ).toBe(true);
     expect(response.checkedResults.every((result) => !/(ops|cloud|grid|works)/.test(result.name))).toBe(true);
-    expect(calls.map((call) => call.extensions)).toEqual([["ai"], ["com"]]);
+    expect(calls.filter((call) => call.extensions[0] === "ai")).toHaveLength(5);
+    expect(calls.filter((call) => call.extensions[0] === "com")).toHaveLength(5);
   });
 
   it("preserves the requested quota extensions instead of filling with fallback TLDs", async () => {
