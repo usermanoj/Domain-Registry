@@ -664,6 +664,37 @@ export function isRegistrarAvailable(result: DomainCheckResult) {
   );
 }
 
+export function hasTakenEvidence(result: DomainCheckResult) {
+  return (
+    result.status === "taken_confirmed" ||
+    result.evidence?.some((item) => item.status === "taken_confirmed") === true
+  );
+}
+
+function hasRegistryNotFoundEvidence(result: DomainCheckResult) {
+  const isNotFound = (item: {
+    source: DomainCheckResult["source"];
+    status: DomainCheckResult["status"];
+    errorCode?: string;
+  }) =>
+    item.status === "manual_check_required" &&
+    ["rdap", "whois"].includes(item.source) &&
+    [
+      "RDAP_NOT_FOUND_REQUIRES_REGISTRAR",
+      "WHOIS_NOT_FOUND_REQUIRES_REGISTRAR",
+    ].includes(item.errorCode ?? "");
+
+  return isNotFound(result) || result.evidence?.some(isNotFound) === true;
+}
+
+export function isRegistryClearCandidate(result: DomainCheckResult) {
+  return (
+    !isRegistrarAvailable(result) &&
+    !hasTakenEvidence(result) &&
+    hasRegistryNotFoundEvidence(result)
+  );
+}
+
 function preferredNameBoost(name: string, preferredName?: string) {
   return preferredName && name === preferredName ? 18 : 0;
 }
@@ -774,10 +805,7 @@ export function prioritizeAvailableDomainResults(
 }
 
 function isReviewCandidate(result: DomainCheckResult) {
-  return (
-    !isRegistrarAvailable(result) &&
-    ["manual_check_required", "unknown", "rate_limited"].includes(result.status)
-  );
+  return isRegistryClearCandidate(result);
 }
 
 function rankReviewDomainResults(

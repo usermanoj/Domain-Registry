@@ -134,7 +134,7 @@ function rankingReasons({
 }) {
   const reasons = [
     `Brand ${brandScore}/100`,
-    `Availability confidence ${confidence}/100`,
+    `Evidence confidence ${confidence}/100`,
     `Risk ${riskScore}/100`,
     `Value $${valuationUsd}`,
     `Launch readiness ${launchReadiness}/100`,

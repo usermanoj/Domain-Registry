@@ -37,7 +37,7 @@ function fakeResult(
       status === "available_confirmed"
         ? "registrar_api"
         : status === "manual_check_required"
-          ? "manual"
+          ? "rdap"
           : "dns",
     providerName: "PlaywrightProvider",
     checkedAt: new Date().toISOString(),
@@ -47,7 +47,14 @@ function fakeResult(
     extension,
     rules: [],
     registrarUrl: `https://example.test/register/${domain}`,
-    rawSummary: "Playwright fixture.",
+    rawSummary:
+      status === "manual_check_required"
+        ? "RDAP returned 404/not found. Registrar checkout is required before treating the domain as available."
+        : "Playwright fixture.",
+    errorCode:
+      status === "manual_check_required"
+        ? "RDAP_NOT_FOUND_REQUIRES_REGISTRAR"
+        : undefined,
   };
 }
 
@@ -341,13 +348,13 @@ test("live search falls back to checked results when no registrar availability i
   await page.getByRole("button", { name: "Search", exact: true }).nth(1).click();
 
   await expect(page.getByText('No registrar-confirmed availability for "agent"')).toBeVisible();
-  await expect(page.getByText("Screening top 20 related candidates").first()).toBeVisible();
-  await expect(page.getByText("Screening related candidates").first()).toBeVisible();
-  await expect(page.getByText("related candidates need registrar check")).toBeVisible({
+  await expect(page.getByText("Screening top 20 registry-clear candidates").first()).toBeVisible();
+  await expect(page.getByText("Screening registry-clear candidates").first()).toBeVisible();
+  await expect(page.getByText("registry-clear candidates need registrar verification")).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByText("Related domains to verify")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Related candidates" })).toBeVisible();
+  await expect(page.getByText("Registry-clear domains to verify")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Registry-clear candidates" })).toBeVisible();
   const visibleDomains = await page.locator("div.font-mono.text-lg").allTextContents();
   expect(visibleDomains).toHaveLength(20);
   expect(visibleDomains.slice(0, 10).every((domain) => domain.endsWith(".ai"))).toBe(true);

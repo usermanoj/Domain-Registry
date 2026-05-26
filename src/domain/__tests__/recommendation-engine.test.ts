@@ -35,12 +35,16 @@ function fakeResult(
       status === "available_confirmed"
         ? "registrar_api"
         : status === "manual_check_required"
-          ? "manual"
+          ? "rdap"
           : "dns",
     checkedAt: new Date("2026-05-25T00:00:00Z").toISOString(),
     premium: false,
     rules: [],
     registrarUrl: `https://example.test/register/${domain}`,
+    errorCode:
+      status === "manual_check_required"
+        ? "RDAP_NOT_FOUND_REQUIRES_REGISTRAR"
+        : undefined,
   };
 }
 
@@ -325,6 +329,65 @@ describe("domain recommendation engine", () => {
     expect(response.checkedResults.every((result) => !/(ops|cloud|grid|works)/.test(result.name))).toBe(true);
     expect(calls.filter((call) => call.extensions[0] === "ai")).toHaveLength(5);
     expect(calls.filter((call) => call.extensions[0] === "com")).toHaveLength(5);
+  });
+
+  it("excludes registry-clear candidates when any evidence says taken", async () => {
+    const plan = buildRecommendationPlan(["ai"], {
+      ai: 1,
+    });
+    let poisonedDomain = "";
+    const checkAvailability = async (
+      names: string[],
+      extensions: string[],
+    ): Promise<DomainCheckResponse> => {
+      const results = names.flatMap((name, index) =>
+        extensions.map((extension) => {
+          const result = fakeResult(name, extension, "manual_check_required");
+
+          if (index === 0) {
+            poisonedDomain = result.domain;
+            result.evidence = [
+              {
+                domain: result.domain,
+                providerName: "RDAPAvailabilityProvider",
+                source: "rdap",
+                status: "taken_confirmed",
+                confidence: "high",
+                checkedAt: result.checkedAt,
+                premium: false,
+                rawSummary: "RDAP registration record exists.",
+              },
+            ];
+          }
+
+          return result;
+        }),
+      );
+
+      return {
+        checkedAt: new Date("2026-05-25T00:00:00Z").toISOString(),
+        mode: "live",
+        capabilities: {
+          registrarAvailability: false,
+          configuredRegistrarProviders: [],
+        },
+        results,
+        recommendations: recommendationsFor(results),
+      };
+    };
+
+    const response = await findAvailableDomainRecommendations({
+      seedName: "agent",
+      selectedExtensions: ["ai"],
+      recommendationPlan: plan,
+      timeBudgetMs: 30_000,
+      existingResults: [],
+      existingRecommendations: [],
+      checkAvailability,
+    });
+
+    expect(response.checkedResults).toHaveLength(1);
+    expect(response.checkedResults[0].domain).not.toBe(poisonedDomain);
   });
 
   it("preserves the requested quota extensions instead of filling with fallback TLDs", async () => {

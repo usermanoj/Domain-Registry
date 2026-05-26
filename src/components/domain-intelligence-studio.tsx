@@ -55,8 +55,10 @@ import {
   buildRecommendationPlan,
   clampRecommendationQuota,
   findAvailableDomainRecommendations,
+  hasTakenEvidence,
   isMockAvailabilityResult,
   isRegistrarAvailable,
+  isRegistryClearCandidate,
   prioritizeAvailableDomainResults,
   recommendationPlanSummary,
   sortRecommendationExtensions,
@@ -193,11 +195,18 @@ const FILTERS: { value: ResultFilter; label: string }[] = [
 ];
 const AVAILABLE_CHECKOUT_CAVEAT =
   "Provider-confirmed at check time. Not reserved. Final availability and price must be confirmed at registrar checkout.";
+const REGISTRY_CLEAR_CAVEAT =
+  "Registry lookup found no registration record. This is not registrar-confirmed availability; verify at checkout before acting.";
 
-const STATUS_META: Record<
-  AvailabilityStatus,
-  { label: string; tone: string; dot: string; matrix: string; tooltip: string }
-> = {
+type StatusMeta = {
+  label: string;
+  tone: string;
+  dot: string;
+  matrix: string;
+  tooltip: string;
+};
+
+const STATUS_META: Record<AvailabilityStatus, StatusMeta> = {
   available_confirmed: {
     label: "Available",
     tone: "border-emerald-300/35 bg-emerald-300/12 text-emerald-100",
@@ -248,12 +257,28 @@ const STATUS_META: Record<
     tooltip: "The domain name failed validation.",
   },
   manual_check_required: {
-    label: "Needs registrar",
+    label: "Verify registrar",
     tone: "border-amber-300/35 bg-amber-300/10 text-amber-100",
     dot: "bg-amber-300",
     matrix: "bg-amber-400/60",
     tooltip: "Open a registrar or registry lookup before making any availability claim.",
   },
+};
+
+const REGISTRY_CLEAR_STATUS_META: StatusMeta = {
+  label: "Registry clear",
+  tone: "border-cyan-200/35 bg-cyan-200/10 text-cyan-100",
+  dot: "bg-cyan-200",
+  matrix: "bg-cyan-400/65",
+  tooltip: REGISTRY_CLEAR_CAVEAT,
+};
+
+const TAKEN_EVIDENCE_STATUS_META: StatusMeta = {
+  label: "Taken evidence",
+  tone: "border-rose-300/35 bg-rose-300/12 text-rose-100",
+  dot: "bg-rose-300",
+  matrix: "bg-rose-400/75",
+  tooltip: "A provider signal says this domain is registered or unavailable.",
 };
 
 const MOCK_STATUS_META: typeof STATUS_META = {
@@ -355,10 +380,13 @@ function resultMatchesFilter(
   if (filter === "all") return true;
   if (filter === "available") return isRegistrarAvailable(result);
   if (filter === "premium") return result.status === "premium_available";
-  if (filter === "taken") return result.status === "taken_confirmed";
+  if (filter === "taken") return hasTakenEvidence(result);
   if (filter === "manual") {
-    return ["manual_check_required", "restricted", "unknown", "rate_limited"].includes(
-      result.status,
+    return (
+      !hasTakenEvidence(result) &&
+      ["manual_check_required", "restricted", "unknown", "rate_limited"].includes(
+        result.status,
+      )
     );
   }
   if (filter === "favorites") return saved.has(result.domain);
@@ -394,13 +422,26 @@ function isMockResult(result: DomainCheckResult) {
 }
 
 function statusMetaForResult(result: DomainCheckResult) {
+  if (isRegistryClearCandidate(result)) return REGISTRY_CLEAR_STATUS_META;
+  if (hasTakenEvidence(result) && result.status !== "taken_confirmed") {
+    return TAKEN_EVIDENCE_STATUS_META;
+  }
+
   return isMockResult(result) ? MOCK_STATUS_META[result.status] : STATUS_META[result.status];
 }
 
 function evidenceLabel(result: DomainCheckResult) {
   if (isMockResult(result)) return "Mock simulation";
-  if (result.source === "dns") return "DNS evidence";
-  if (result.source === "rdap") return "RDAP registry";
+  if (result.source === "dns") return result.status === "taken_confirmed" ? "DNS in use" : "DNS check";
+  if (result.source === "rdap") {
+    if (result.status === "taken_confirmed" || hasTakenEvidence(result)) {
+      return "RDAP registered";
+    }
+    if (isRegistryClearCandidate(result)) {
+      return "RDAP no record";
+    }
+    return "RDAP check";
+  }
   if (result.source === "registrar_api") return "Registrar API";
   if (result.source === "manual") return "Registrar check";
   return sourceLabel(result.source);
@@ -422,9 +463,15 @@ function evidenceSummary(result: DomainCheckResult) {
   }
 
   if (result.source === "rdap") {
-    return result.status === "available_confirmed"
-      ? "Registry RDAP returned not found; registrar confirmation is still recommended."
-      : "Registry registration data source.";
+    if (result.status === "taken_confirmed" || hasTakenEvidence(result)) {
+      return "RDAP returned a registration record. This is treated as registered/taken evidence.";
+    }
+
+    if (isRegistryClearCandidate(result)) {
+      return REGISTRY_CLEAR_CAVEAT;
+    }
+
+    return result.rawSummary ?? "RDAP registry signal recorded.";
   }
 
   if (result.source === "registrar_api") {
@@ -696,8 +743,7 @@ export function DomainIntelligenceStudio() {
         ? results.filter(
             (result) =>
               !exactResultDomains.has(result.domain) &&
-              !isRegistrarAvailable(result) &&
-              ["manual_check_required", "unknown", "rate_limited"].includes(result.status),
+              isRegistryClearCandidate(result),
           )
         : [],
     [exactResultDomains, results, searchOutcome],
@@ -938,7 +984,7 @@ export function DomainIntelligenceStudio() {
         setStatusText(
           canConfirmRegistrarAvailability
             ? "Finding available alternatives"
-            : "Screening related candidates",
+            : "Screening registry-clear candidates",
         );
         void appendAvailableAlternatives(
           runId,
@@ -986,7 +1032,7 @@ export function DomainIntelligenceStudio() {
     setStatusText(
       baseResults.some(isRegistrarAvailable)
         ? "Finding available alternatives"
-        : "Screening related candidates",
+        : "Screening registry-clear candidates",
     );
 
     try {
@@ -1048,7 +1094,7 @@ export function DomainIntelligenceStudio() {
         setStatusText(
           alternatives.results.length > 0
             ? "Available recommendations updated"
-            : "Related candidates ready",
+            : "Registry-clear candidates ready",
         );
       } else {
         if (baseResults.filter(isRegistrarAvailable).length === 0) {
@@ -2139,11 +2185,11 @@ function SearchOutcomeNotice({
   const readyCopy = hasRelatedAvailable
     ? `Below are the top ${relatedAvailableCount} registrar-confirmed related domains, targeting ${splitSummary}.`
     : hasRelatedCandidates && !outcome.registrarAvailability
-      ? `Registrar API credentials are not configured, so confirmed availability cannot be claimed. Showing ${relatedCandidateCount} high-quality related candidates needing registrar confirmation, targeting ${splitSummary}.`
+      ? `Registrar API credentials are not configured, so confirmed availability cannot be claimed. Showing ${relatedCandidateCount} registry-clear candidates that still require registrar checkout verification, targeting ${splitSummary}.`
       : "No registrar-confirmed related domains were found with the current provider setup. Review the checked results or configure a registrar API for stronger live availability.";
   const findingCopy = outcome.registrarAvailability
     ? `Exact lookup completed first. Finding top ${target} related available domains, split ${splitSummary}.`
-    : `Exact lookup completed first. Screening top ${target} related candidates across ${splitSummary}.`;
+    : `Exact lookup completed first. Screening top ${target} registry-clear candidates across ${splitSummary}.`;
 
   return (
     <div
@@ -2228,13 +2274,13 @@ function SearchOutcomeNotice({
             <RefreshCw className="h-3.5 w-3.5 animate-spin" />
             {outcome.registrarAvailability
               ? `Finding top ${target} related available domains`
-              : `Screening top ${target} related candidates`}
+              : `Screening top ${target} registry-clear candidates`}
           </span>
         )}
         {outcome.alternativesReady && relatedAvailableCount === 0 && (
           <span className="rounded-full border border-amber-200/25 bg-amber-200/10 px-2.5 py-1 text-amber-100">
             {hasRelatedCandidates && !outcome.registrarAvailability
-              ? `${relatedCandidateCount} related candidates need registrar check`
+              ? `${relatedCandidateCount} registry-clear candidates need registrar verification`
               : "0 registrar-confirmed related domains"}
           </span>
         )}
@@ -2372,7 +2418,7 @@ function DashboardToolbar({
             ? `Screening top ${recommendationTarget}`
             : `Finding top ${recommendationTarget}`
           : isRelatedReviewMode
-            ? `${totalCount} need registrar check`
+            ? `${totalCount} registry clear; verify`
           : filter === "available"
           ? `${availableCount} confirmed available`
           : `${totalCount} checked`}
@@ -2492,9 +2538,9 @@ function DomainResultsPanel({
           </p>
           <h2 className="mt-1 text-lg font-semibold">
             {isFindingAlternatives && isRelatedReviewMode
-              ? "Screening related candidates"
+              ? "Screening registry-clear candidates"
               : isRelatedReviewMode
-              ? "Related domains to verify"
+              ? "Registry-clear domains to verify"
               : filter === "available"
                 ? "Confirmed available domains"
                 : "Checked extensions"}
@@ -2521,10 +2567,10 @@ function DomainResultsPanel({
           <h3 className="mt-4 text-lg font-semibold text-white">
             {isFindingAlternatives
               ? isRelatedReviewMode
-                ? `Screening top ${recommendationTarget} related candidates`
+                ? `Screening top ${recommendationTarget} registry-clear candidates`
                 : `Finding top ${recommendationTarget} available related domains`
               : isRelatedReviewMode
-                ? "Related domains need registrar confirmation"
+                ? "Registry-clear domains need registrar verification"
               : filter === "available"
               ? "No confirmed available domains in this run"
               : "No domains match this filter"}
@@ -2533,7 +2579,7 @@ function DomainResultsPanel({
             {isFindingAlternatives
               ? "Checking ranked names against registry signals and excluding known registered domains before showing the shortlist."
               : isRelatedReviewMode
-                ? "These candidates match the search intent and selected extension split, but need a registrar API or checkout lookup before availability can be claimed."
+                ? "These names have no registry registration record in the supporting lookup, but still need registrar checkout verification."
               : "Available-only shows registrar-confirmed results and excludes mock simulations, taken names, and manual checks."}
           </p>
           {!isFindingAlternatives && (
@@ -2775,7 +2821,7 @@ function RecommendationPanel({
             Recommendations
           </p>
           <h2 className="mt-1 text-xl font-semibold">
-            {isCandidateFallbackMode ? "Related candidates" : "Available recommendations"}
+            {isCandidateFallbackMode ? "Registry-clear candidates" : "Available recommendations"}
           </h2>
         </div>
         <IconButton
@@ -2797,10 +2843,10 @@ function RecommendationPanel({
           <div className="rounded-2xl border border-white/[0.07] bg-black/20 p-4 text-sm text-zinc-400">
             {isFindingAlternatives
               ? isCandidateFallbackMode
-                ? `Screening top ${recommendationTarget} related candidates before display.`
+                ? `Screening top ${recommendationTarget} registry-clear candidates before display.`
                 : `Finding top ${recommendationTarget} available commercial-value recommendations.`
               : isCandidateFallbackMode
-                ? "These names are ranked for commercial quality and extension fit, but still need registrar confirmation."
+                ? "These names are registry-clear and ranked for commercial quality, but still need registrar checkout verification."
                 : "No variants have passed live availability checks yet. Try different roots or configure a registrar API for stronger confirmation."}
           </div>
         ) : (
@@ -2861,10 +2907,10 @@ function RecommendationCard({
         {intelligence && (
           <>
             <span
-              title={`Availability confidence ${intelligence.confidenceScore}/100`}
+              title={`Evidence confidence ${intelligence.confidenceScore}/100`}
               className="rounded-full border border-sky-200/20 bg-sky-200/8 px-2.5 py-1 text-xs font-bold text-sky-100"
             >
-              Avail {intelligence.confidenceScore}
+              Evid {intelligence.confidenceScore}
             </span>
             <span
               title={`Brand risk ${intelligence.riskScore}/100`}
